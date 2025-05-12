@@ -715,7 +715,7 @@ end
 
 # => [note_idx]
 export.note_compute_note_id
-    exec.note::compute_output_note_id
+    exec.note::get_output_note_id
     # => [note_idx, ASSET, pad(11)]
 end
 

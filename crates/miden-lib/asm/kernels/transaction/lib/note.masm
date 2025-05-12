@@ -242,7 +242,7 @@ end
 #! Where:
 #! - note_data_ptr is a pointer to the data section of the output note.
 #! - NOTE_ID is the ID of the output note located at note_data_ptr.
-export.compute_output_note_id
+proc.compute_output_note_id
     # pad capacity elements of hasher
     padw
 
@@ -257,6 +257,26 @@ export.compute_output_note_id
 
     # save the output notes commitment to memory
     movup.4 mem_storew
+end
+
+
+export.get_output_note_id
+    
+    exec.memory::get_output_note_recipient
+
+    push.112 debug.stack drop
+
+    # populate the last four elements of the hasher rate with the output note's asset commitment
+    dup.8 exec.compute_output_note_assets_hash
+
+    push.222 debug.stack drop
+
+    # compute output note commitment and extract digest
+    hperm exec.rpo::squeeze_digest
+
+    push.333 debug.stack drop
+
+    swapw dropw
 end
 
 #! Computes a commitment to the output notes. This is computed as a sequential hash of

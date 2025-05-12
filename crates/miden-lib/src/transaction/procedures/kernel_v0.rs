@@ -60,7 +60,7 @@ pub const KERNEL0_PROCEDURES: [Digest; 37] = [
     // note_get_script_root
     digest!("0x66fb188ca538d9f8bc6fd1aedbd19336bf6e3a1c0ae67b5f725cbc9cb4f7867f"),
     // note_compute_note_id
-    digest!("0x9e2af754a90fb46d8f323347589a247dba0e63c7b083e3045c3fa8c926b94954"),
+    digest!("0x4a8bae9c619d4d5d6cd70f6ab6a6b2a6e91251548191edfd781d040f02ea670d"),
     // tx_create_note
     digest!("0x253937a46d11f8a193163e66b03f0ca9072207d8fead877c29388ff967e7b636"),
     // tx_get_input_notes_commitment

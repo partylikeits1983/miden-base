@@ -1,11 +1,13 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
+use assembly::diagnostics::tracing::Metadata;
 use miden_lib::{
     errors::tx_kernel_errors::{
         ERR_NON_FUNGIBLE_ASSET_ALREADY_EXISTS,
         ERR_NOTE_NETWORK_EXECUTION_DOES_NOT_TARGET_NETWORK_ACCOUNT,
         ERR_TX_NUMBER_OF_OUTPUT_NOTES_EXCEEDS_LIMIT,
     },
+    note::{create_p2id_note, utils},
     transaction::{
         TransactionKernel,
         memory::{
@@ -17,8 +19,8 @@ use miden_lib::{
 };
 use miden_objects::{
     FieldElement,
-    account::AccountId,
-    asset::NonFungibleAsset,
+    account::{AccountId, AccountIdVersion, AccountStorageMode, AccountType, NetworkAccount},
+    asset::{FungibleAsset, NonFungibleAsset},
     block::BlockNumber,
     note::{
         Note, NoteAssets, NoteExecutionHint, NoteExecutionMode, NoteInputs, NoteMetadata,
@@ -35,6 +37,7 @@ use miden_objects::{
     transaction::{InputNotes, OutputNote, OutputNotes, TransactionArgs},
 };
 use miden_tx::{TransactionExecutor, TransactionExecutorError};
+use rand::rng;
 
 use super::{Felt, ONE, ProcessState, Word, ZERO};
 use crate::{
@@ -532,15 +535,36 @@ fn test_create_note_and_add_asset() {
     );
 }
 
+use std::println;
 #[test]
 fn test_create_note_add_asset_get_id() {
     let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
 
     let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap();
-    let recipient = [ZERO, ONE, Felt::new(2), Felt::new(3)];
-    let aux = Felt::new(27);
-    let tag = NoteTag::from_account_id(faucet_id, NoteExecutionMode::Local).unwrap();
+
+    let sender = faucet_id;
+    let target = AccountId::dummy(
+        [1; 15],
+        AccountIdVersion::Version0,
+        AccountType::FungibleFaucet,
+        AccountStorageMode::Private,
+        NetworkAccount::Disabled,
+    );
+
+    let serial_num = [ZERO, ONE, Felt::new(2), Felt::new(3)];
+    let aux = Felt::new(555);
     let asset = [Felt::new(10), ZERO, faucet_id.suffix(), faucet_id.prefix().as_felt()];
+
+    let note_type = NoteType::Public;
+
+    let tag = NoteTag::from_account_id(target, NoteExecutionMode::Local).unwrap();
+    let metadata =
+        NoteMetadata::new(sender, note_type, tag, NoteExecutionHint::always(), aux).unwrap();
+    let fungible_asset = FungibleAsset::new(faucet_id, 10).unwrap();
+    let vault = NoteAssets::new(vec![fungible_asset.into()]).unwrap();
+
+    let recipient = utils::build_p2id_recipient(target, serial_num).unwrap();
+    let note = Note::new(vault, metadata, recipient.clone());
 
     let code = format!(
         "
@@ -569,16 +593,20 @@ fn test_create_note_add_asset_get_id() {
             dropw
             # => [note_idx]
 
+            push.111 debug.stack debug.mem.0x01000004.0x01000017 drop
+
             call.tx::compute_note_id
+
+            debug.stack
 
             # truncate the stack
             swapdw dropw dropw
         end
         ",
-        recipient = word_to_masm_push_string(&recipient),
-        PUBLIC_NOTE = NoteType::Public as u8,
-        NOTE_EXECUTION_HINT = Felt::from(NoteExecutionHint::always()),
-        tag = tag,
+        recipient = note.recipient().digest().to_hex(),
+        PUBLIC_NOTE = note.metadata().note_type() as u8,
+        NOTE_EXECUTION_HINT = Felt::from(note.metadata().execution_hint()),
+        tag = note.metadata().tag(),
         asset = word_to_masm_push_string(&asset),
     );
 
@@ -589,6 +617,13 @@ fn test_create_note_add_asset_get_id() {
         )
         .unwrap();
     let process_state: ProcessState = process.into();
+
+    println!("noteid: {:?}", note.id());
+    println!("recipient: {:?}", note.recipient().digest());
+    println!("asset hash: {:?}", note.assets().commitment());
+    println!("target: {:?}", target);
+    println!("faucet: {:?} {:?}", faucet_id.prefix(), faucet_id.suffix());
+    println!("stack: {:?}", process_state.get_stack_word(0));
 
     assert_eq!(
         read_root_mem_word(&process_state, OUTPUT_NOTE_SECTION_OFFSET + OUTPUT_NOTE_ASSETS_OFFSET),
