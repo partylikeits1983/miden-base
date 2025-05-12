@@ -533,6 +533,77 @@ fn test_create_note_and_add_asset() {
 }
 
 #[test]
+fn test_create_note_add_asset_get_id() {
+    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+
+    let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap();
+    let recipient = [ZERO, ONE, Felt::new(2), Felt::new(3)];
+    let aux = Felt::new(27);
+    let tag = NoteTag::from_account_id(faucet_id, NoteExecutionMode::Local).unwrap();
+    let asset = [Felt::new(10), ZERO, faucet_id.suffix(), faucet_id.prefix().as_felt()];
+
+    let code = format!(
+        "
+        use.miden::contracts::wallets::basic->wallet
+        use.miden::tx
+
+        use.kernel::prologue
+        use.test::account
+
+        begin
+            exec.prologue::prepare_transaction
+
+            push.{recipient}
+            push.{NOTE_EXECUTION_HINT}
+            push.{PUBLIC_NOTE}
+            push.{aux}
+            push.{tag}
+
+            call.wallet::create_note
+            # => [note_idx]
+
+            push.{asset}
+            call.account::add_asset_to_note
+            # => [ASSET, note_idx]
+
+            dropw
+            # => [note_idx]
+
+            call.tx::compute_note_id
+
+            # truncate the stack
+            swapdw dropw dropw
+        end
+        ",
+        recipient = word_to_masm_push_string(&recipient),
+        PUBLIC_NOTE = NoteType::Public as u8,
+        NOTE_EXECUTION_HINT = Felt::from(NoteExecutionHint::always()),
+        tag = tag,
+        asset = word_to_masm_push_string(&asset),
+    );
+
+    let process = &tx_context
+        .execute_code_with_assembler(
+            &code,
+            TransactionKernel::testing_assembler_with_mock_account().with_debug_mode(true),
+        )
+        .unwrap();
+    let process_state: ProcessState = process.into();
+
+    assert_eq!(
+        read_root_mem_word(&process_state, OUTPUT_NOTE_SECTION_OFFSET + OUTPUT_NOTE_ASSETS_OFFSET),
+        asset,
+        "asset must be stored at the correct memory location",
+    );
+
+    assert_eq!(
+        process_state.get_stack_item(0),
+        ZERO,
+        "top item on the stack is the index to the output note"
+    );
+}
+
+#[test]
 fn test_create_note_and_add_multiple_assets() {
     let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
 

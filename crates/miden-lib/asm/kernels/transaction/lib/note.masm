@@ -242,7 +242,7 @@ end
 #! Where:
 #! - note_data_ptr is a pointer to the data section of the output note.
 #! - NOTE_ID is the ID of the output note located at note_data_ptr.
-proc.compute_output_note_id
+export.compute_output_note_id
     # pad capacity elements of hasher
     padw
 

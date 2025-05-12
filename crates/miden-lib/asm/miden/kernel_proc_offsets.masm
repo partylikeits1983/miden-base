@@ -46,27 +46,28 @@ const.NOTE_GET_SERIAL_NUMBER_OFFSET=22
 const.NOTE_GET_INPUTS_COMMITMENT_OFFSET=23
 const.NOTE_GET_SENDER_OFFSET=24
 const.NOTE_GET_SCRIPT_ROOT_OFFSET=25
+const.NOTE_COMPUTE_NOTE_ID_OFFSET=26
 
 ### Tx ##########################################
 # creation
-const.TX_CREATE_NOTE_OFFSET=26
+const.TX_CREATE_NOTE_OFFSET=27
 
 # io commitments
-const.TX_GET_INPUT_NOTES_COMMITMENT_OFFSET=27
-const.TX_GET_OUTPUT_NOTES_COMMITMENT_OFFSET=28
+const.TX_GET_INPUT_NOTES_COMMITMENT_OFFSET=28
+const.TX_GET_OUTPUT_NOTES_COMMITMENT_OFFSET=29
 
 # block info
-const.TX_GET_BLOCK_COMMITMENT_OFFSET=29
-const.TX_GET_BLOCK_NUMBER_OFFSET=30
-const.TX_GET_BLOCK_TIMESTAMP_OFFSET=31
+const.TX_GET_BLOCK_COMMITMENT_OFFSET=30
+const.TX_GET_BLOCK_NUMBER_OFFSET=31
+const.TX_GET_BLOCK_TIMESTAMP_OFFSET=32
 
 # foreign context
-const.TX_START_FOREIGN_CONTEXT_OFFSET=32
-const.TX_END_FOREIGN_CONTEXT_OFFSET=33
+const.TX_START_FOREIGN_CONTEXT_OFFSET=33
+const.TX_END_FOREIGN_CONTEXT_OFFSET=34
 
 # expiration data
-const.TX_GET_EXPIRATION_DELTA_OFFSET=34          # accessor
-const.TX_UPDATE_EXPIRATION_BLOCK_NUM_OFFSET=35   # mutator
+const.TX_GET_EXPIRATION_DELTA_OFFSET=35          # accessor
+const.TX_UPDATE_EXPIRATION_BLOCK_NUM_OFFSET=36   # mutator
 
 # ACCESSORS
 # -------------------------------------------------------------------------------------------------
@@ -340,6 +341,12 @@ end
 export.note_add_asset_offset
     push.NOTE_ADD_ASSET_OFFSET
 end
+
+
+export.note_compute_note_id_offset
+    push.NOTE_COMPUTE_NOTE_ID_OFFSET
+end
+
 
 #! Returns the offset of the `note_get_serial_number` kernel procedure.
 #!
