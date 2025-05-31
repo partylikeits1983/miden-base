@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.9.1 (TBD)
+## 0.9.1 (2025-05-30)
 
 ### Fixes
 
 - Version check always fails in proxy (#1407).
+- Expose types used in public APIs (#1385).
 
 ## 0.9.0 (2025-05-20)
 
