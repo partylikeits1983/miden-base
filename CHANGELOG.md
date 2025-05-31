@@ -6,10 +6,11 @@
 - Allow NOOP transactions and state-updating transactions against the same account in the same block (#1393).
 - Implement map in transaction kernel library (#1396).
 
-## 0.9.1 (TBD)
+## 0.9.1 (2025-05-30)
 
 ### Fixes
 
+- Expose types used in public APIs (#1385).
 - Version check always fails in proxy (#1407).
 
 ## 0.9.0 (2025-05-20)
