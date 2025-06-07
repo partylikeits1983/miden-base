@@ -8,6 +8,7 @@
 - Implement map in transaction kernel library (#1396).
 - Added shutdown configuration options to the `miden-proving-service` proxy (#1405).
 - [BREAKING] Implement transaction script arguments for the `TransactionScript` (#1406).
+- Add support for workers configuration in the proxy with environment variables (#1412).
 - Implement Display for `NoteType` (#1420).
 
 ## 0.9.1 (2025-05-30)
