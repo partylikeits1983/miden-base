@@ -310,10 +310,10 @@ async fn create_status_client(
 /// Returns whether the worker version is valid.
 ///
 /// The version is valid if it is a semantic version and is greater than or equal to the
-/// current version. We dont check the patch version.
+/// current version. We don't check the patch version.
 /// Returns false if either version string is malformed.
 fn is_valid_version(current_version: &str, received_version: &str) -> bool {
-    // Dont check the patch version.
+    // Don't check the patch version.
     let current_version_parts: Vec<&str> = current_version.split('.').collect();
     let version_parts: Vec<&str> = received_version.split('.').collect();
 

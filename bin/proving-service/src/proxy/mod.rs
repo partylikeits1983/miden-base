@@ -49,7 +49,7 @@ mod worker;
 
 /// Load balancer that uses a round robin strategy
 #[derive(Debug)]
-pub struct LoadBalancerState {
+pub(crate) struct LoadBalancerState {
     workers: Arc<RwLock<Vec<Worker>>>,
     timeout_secs: Duration,
     connection_timeout_secs: Duration,
@@ -307,7 +307,7 @@ impl RequestContext {
 /// This is necessary because we want to share the load balancer between the proxy server and the
 /// health check background service.
 #[derive(Debug)]
-pub struct LoadBalancer(pub Arc<LoadBalancerState>);
+pub(crate) struct LoadBalancer(pub Arc<LoadBalancerState>);
 
 /// Implements load-balancing of incoming requests across a pool of workers.
 ///

@@ -60,6 +60,7 @@ impl ProverRpcApi {
         fields(id = tracing::field::Empty),
         err
     )]
+    #[allow(clippy::result_large_err)]
     pub fn prove_tx(
         &self,
         transaction_witness: TransactionWitness,
@@ -90,6 +91,7 @@ impl ProverRpcApi {
         fields(id = tracing::field::Empty),
         err
     )]
+    #[allow(clippy::result_large_err)]
     pub fn prove_batch(
         &self,
         proposed_batch: ProposedBatch,
@@ -120,6 +122,7 @@ impl ProverRpcApi {
         fields(id = tracing::field::Empty),
         err
     )]
+    #[allow(clippy::result_large_err)]
     pub fn prove_block(
         &self,
         proposed_block: ProposedBlock,
