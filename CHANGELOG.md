@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.2 (2025-06-10)
+
+- Refreshed Cargo.lock file.
+
 ## 0.9.1 (2025-05-30)
 
 ### Fixes
