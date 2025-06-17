@@ -19,6 +19,7 @@
 - [BREAKING] Introduce `ScriptMastForestStore` and refactor MAST forest provisioning in the `TransactionExecutor` (#1438).
 - [BREAKING] Allow list of keys in `AccountFile` (#1451).
 - Improve error message quality in `CodeExecutor::run` and `TransactionContext::execute_code` (#1458).
+- [BREAKING] Forbid the execution of the empty transactions (#1459).
 
 ## 0.9.1 (2025-05-30)
 
