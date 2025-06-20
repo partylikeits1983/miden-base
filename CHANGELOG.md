@@ -22,6 +22,22 @@
 - [BREAKING] Forbid the execution of the empty transactions (#1459).
 - Temporarily bump ACCOUNT_UPDATE_MAX_SIZE to 256 KiB for compiler testing.
 
+## 0.9.5 (2025-06-20) - `miden-lib` crate only
+
+- Added `symbol()`, `decimals()`, and `max_supply()` accessors to the `TokenSymbol` struct.
+
+## 0.9.4 (2025-06-12)
+
+- Refactor proving service client errors (#1448)
+
+## 0.9.3 (2025-06-12)
+
+- Add TLS support to `miden-proving-service-client` (#1447)
+
+## 0.9.2 (2025-06-10)
+
+- Refreshed Cargo.lock file.
+
 ## 0.9.1 (2025-05-30)
 
 ### Fixes
