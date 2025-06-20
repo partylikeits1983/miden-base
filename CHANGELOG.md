@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.5 (2025-06-20) - `miden-lib` crate only
+
+- Added `symbol()`, `decimals()`, and `max_supply()` accessors to the `TokenSymbol` struct.
+
 ## 0.9.4 (2025-06-12)
 
 - Refactor proving service client errors (#1448)
