@@ -1,4 +1,5 @@
 use.miden::account
+use.miden::account_id
 use.miden::note
 use.note_scripts::utils
 
@@ -44,7 +45,7 @@ begin
     # => [account_id_prefix, account_id_suffix, target_account_id_prefix, target_account_id_suffix, ...]
 
     # ensure account_id = target_account_id, fails otherwise
-    exec.account::is_id_equal assert.err=ERR_P2ID_TARGET_ACCT_MISMATCH
+    exec.account_id::is_equal assert.err=ERR_P2ID_TARGET_ACCT_MISMATCH
     # => []
 
     exec.utils::add_note_assets_to_account
