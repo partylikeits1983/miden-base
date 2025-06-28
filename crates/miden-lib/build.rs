@@ -10,7 +10,7 @@ use std::{
 
 use assembly::{
     Assembler, DefaultSourceManager, KernelLibrary, Library, LibraryNamespace, Report,
-    diagnostics::{IntoDiagnostic, Result, WrapErr},
+    diagnostics::{IntoDiagnostic, NamedSource, Result, WrapErr},
     utils::Serializable,
 };
 use regex::Regex;
@@ -313,12 +313,26 @@ fn compile_miden_lib(
 /// file, and stores the compiled files into the "{target_dir}".
 ///
 /// The source files are expected to contain executable programs.
-fn compile_note_scripts(source_dir: &Path, target_dir: &Path, assembler: Assembler) -> Result<()> {
+fn compile_note_scripts(
+    source_dir: &Path,
+    target_dir: &Path,
+    mut assembler: Assembler,
+) -> Result<()> {
     fs::create_dir_all(target_dir)
         .into_diagnostic()
         .wrap_err("failed to create note_scripts directory")?;
 
+    // Add utils.masm as a library to the assembler
+    let utils_file_path = source_dir.join("utils.masm");
+    let utils_source = fs::read_to_string(&utils_file_path).into_diagnostic()?;
+    assembler.add_module(NamedSource::new("note_scripts::utils", utils_source))?;
+
     for masm_file_path in get_masm_files(source_dir).unwrap() {
+        // Skip utils.masm since it was added as a library
+        if masm_file_path == utils_file_path {
+            continue;
+        }
+
         // read the MASM file, parse it, and serialize the parsed AST to bytes
         let code = assembler.clone().assemble_program(masm_file_path.clone())?;
 

@@ -28,8 +28,8 @@
 - [BREAKING] Move transaction script argument from `TransactionScript` to `TransactionArgs`. (#1426).
 - [BREAKING] Remove transaction inputs from `TransactionScript`. (#1426).
 - [BREAKING] Implemented account delta commitment (#1471).
-- [BREAKING] Store account ID and number of slots in account delta (#1493).
 - Added `Note::is_network_note()` accessor (#1485).
+- [BREAKING] Remove P2IDR and replace with P2IDE (#1483).
 
 ## 0.9.5 (2025-06-20) - `miden-lib` crate only
 

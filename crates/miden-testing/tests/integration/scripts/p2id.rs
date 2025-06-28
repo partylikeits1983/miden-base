@@ -44,7 +44,6 @@ fn p2id_script_multiple_assets() {
             target_account.id(),
             &[fungible_asset_1, fungible_asset_2],
             NoteType::Public,
-            None,
         )
         .unwrap();
 
@@ -109,7 +108,6 @@ fn prove_consume_note_with_new_account() {
             target_account.id(),
             &[fungible_asset],
             NoteType::Public,
-            None,
         )
         .unwrap();
 
@@ -157,7 +155,6 @@ fn prove_consume_multiple_notes() {
             account.id(),
             &[fungible_asset_1],
             NoteType::Private,
-            None,
         )
         .unwrap();
     let note_2 = mock_chain
@@ -166,7 +163,6 @@ fn prove_consume_multiple_notes() {
             account.id(),
             &[fungible_asset_2],
             NoteType::Private,
-            None,
         )
         .unwrap();
 
@@ -207,7 +203,6 @@ fn test_create_consume_multiple_notes() {
             account.id(),
             &[input_note_asset_1],
             NoteType::Private,
-            None,
         )
         .unwrap();
 
@@ -217,7 +212,6 @@ fn test_create_consume_multiple_notes() {
             account.id(),
             &[input_note_asset_2],
             NoteType::Private,
-            None,
         )
         .unwrap();
 
