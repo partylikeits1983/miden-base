@@ -159,7 +159,7 @@ impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
         .map_err(TransactionExecutorError::TransactionHostCreationFailed)?;
 
         // Execute the transaction kernel
-        let result = vm_processor::execute(
+        let trace = vm_processor::execute(
             &TransactionKernel::main(),
             stack_inputs,
             &mut host,
@@ -168,7 +168,7 @@ impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
         )
         .map_err(TransactionExecutorError::TransactionProgramExecutionFailed)?;
 
-        build_executed_transaction(tx_args, tx_inputs, result.stack_outputs().clone(), host)
+        build_executed_transaction(tx_args, tx_inputs, trace.stack_outputs().clone(), host)
     }
 
     // SCRIPT EXECUTION
@@ -364,8 +364,8 @@ fn build_executed_transaction(
         TransactionKernel::from_transaction_parts(&stack_outputs, &advice_map, output_notes)
             .map_err(TransactionExecutorError::TransactionOutputConstructionFailed)?;
 
-    let final_account = &tx_outputs.account;
     let initial_account = tx_inputs.account();
+    let final_account = &tx_outputs.account;
 
     // Temporarily copy the account update commitment into the advice witness map, if it is present,
     // so it can be accessed in account delta tests.
@@ -395,9 +395,9 @@ fn build_executed_transaction(
                 actual: account_delta.nonce(),
             });
         }
-    } else if final_account.nonce() != account_delta.nonce().unwrap_or_default() {
+    } else if nonce_delta != account_delta.nonce().unwrap_or_default() {
         return Err(TransactionExecutorError::InconsistentAccountNonceDelta {
-            expected: Some(final_account.nonce()),
+            expected: Some(nonce_delta),
             actual: account_delta.nonce(),
         });
     }
