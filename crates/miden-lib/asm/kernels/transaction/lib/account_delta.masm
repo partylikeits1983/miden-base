@@ -1,7 +1,11 @@
 use.kernel::memory
+use.kernel::link_map
 use.kernel::constants
 use.kernel::account
+use.kernel::asset
+use.kernel::asset_vault
 use.std::crypto::hashes::rpo
+use.std::math::u64
 
 # CONSTANTS
 # =================================================================================================
@@ -15,6 +19,9 @@ const.DOMAIN_MAP=3
 
 # PROCEDURES
 # =================================================================================================
+
+# DELTA COMPUTATION
+# -------------------------------------------------------------------------------------------------
 
 #! Computes the commitment to the native account's delta.
 #!
@@ -43,7 +50,8 @@ export.compute_commitment
     hperm
     # => [RATE, RATE, PERM]
 
-    # TODO: Compute vault commitment
+    exec.update_fungible_asset_delta
+    # => [RATE, RATE, PERM]
 
     exec.update_storage_delta
     # => [RATE, RATE, PERM]
@@ -112,9 +120,9 @@ proc.update_slot_delta
     if.true
         exec.update_value_slot_delta
     else
-      # TODO: Update delta hasher with map.
-      # drop slot idx
-      drop
+        # TODO: Update delta hasher with map.
+        # drop slot idx
+        drop
     end
 end
 
@@ -134,32 +142,113 @@ proc.update_value_slot_delta
 
     # only include in delta if the slot's value has changed
     if.true
-      # drop init value
-      dropw
-      # => [CURRENT_VALUE, slot_idx, RATE, RATE, PERM]
+        # drop init value
+        dropw
+        # => [CURRENT_VALUE, slot_idx, RATE, RATE, PERM]
 
-      # build value slot metadata
-      push.DOMAIN_VALUE
-      # => [domain, CURRENT_VALUE, slot_idx, RATE, RATE, PERM]
+        # build value slot metadata
+        push.DOMAIN_VALUE
+        # => [domain, CURRENT_VALUE, slot_idx, RATE, RATE, PERM]
 
-      movup.5 push.0.0
-      # => [0, 0, slot_idx, domain, CURRENT_VALUE, RATE, RATE, PERM]
+        movup.5 push.0.0
+        # => [0, 0, slot_idx, domain, CURRENT_VALUE, RATE, RATE, PERM]
 
-      # clear rate elements
-      swapdw dropw dropw
-      # => [0, 0, slot_idx, domain, CURRENT_VALUE, PERM]
+        # clear rate elements
+        swapdw dropw dropw
+        # => [0, 0, slot_idx, domain, CURRENT_VALUE, PERM]
 
-      # arrange rate words in correct order
-      swapw
-      # => [CURRENT_VALUE, 0, 0, slot_idx, domain, PERM]
+        # arrange rate words in correct order
+        swapw
+        # => [CURRENT_VALUE, 0, 0, slot_idx, domain, PERM]
 
-      hperm
-      # => [RATE, RATE, PERM]
+        hperm
+        # => [RATE, RATE, PERM]
     else
-      # drop init value, current value and slot idx
-      dropw dropw drop
-      # => [RATE, RATE, PERM]
+        # drop init value, current value and slot idx
+        dropw dropw drop
+        # => [RATE, RATE, PERM]
     end
+    # => [RATE, RATE, PERM]
+end
+
+#! Updates the given delta hasher with the fungible asset vault delta.
+#!
+#! Inputs:  [RATE, RATE, PERM]
+#! Outputs: [RATE, RATE, PERM]
+proc.update_fungible_asset_delta.2
+    exec.memory::get_account_delta_fungible_asset_ptr
+    # => [account_delta_fungible_asset_ptr, RATE, RATE, PERM]
+
+    exec.link_map::iter
+    # => [has_next, iter, RATE, RATE, PERM]
+
+    # enter loop if the link map is not empty
+    while.true
+        exec.link_map::next_key_value
+        # => [KEY, VALUE0, has_next, iter, ...]
+
+        # store has_next
+        movup.8 loc_store.0
+        # => [KEY, VALUE0, iter, ...]
+
+        # store iter
+        movup.8 loc_store.1
+        # => [KEY, VALUE0, ...]
+        # this stack state is equivalent to:
+        # => [[faucet_id_prefix, faucet_id_suffix, 0, 0], [delta_amount_hi, delta_amount_lo, 0, 0], ...]
+
+        swapw
+        # => [[delta_amount_hi, delta_amount_lo, 0, 0], [faucet_id_prefix, faucet_id_suffix, 0, 0], ...]
+
+        # this reassembles the delta amount into a felt, which is safe to do because the delta
+        # amount is in range [-2^63 + 1, 2^63 - 1], so its absolute value will fit into a felt.
+        exec.i64_absolute
+        # => [[is_amount_positive, delta_amount_abs, 0, 0], ...]
+
+        # rename is_amount_positive to was_added
+        movdn.2
+        # => [[delta_amount_abs, 0, was_added, 0], ...]
+
+        dup neq.0
+        # => [is_delta_amount_non_zero, [delta_amount_abs, 0, was_added, 0], [faucet_id_prefix, faucet_id_suffix, 0, 0], ...]
+
+        # if delta amount is non-zero, update the hasher
+        if.true
+            swap.7
+            # => [[0, 0, was_added, 0], [faucet_id_prefix, faucet_id_suffix, 0, delta_amount_abs], ...]
+
+            drop push.DOMAIN_ASSET
+            # => [[domain, 0, was_added, 0], [faucet_id_prefix, faucet_id_suffix, 0, delta_amount_abs], ...]
+
+            swap.3
+            # => [[0, 0, was_added, domain], [faucet_id_prefix, faucet_id_suffix, 0, delta_amount_abs], ...]
+
+            swapw
+            # => [[faucet_id_prefix, faucet_id_suffix, 0, delta_amount_abs], [0, 0, was_added, domain], RATE, RATE, PERM]
+
+            # drop previous RATE elements
+            swapdw dropw dropw
+            # => [[faucet_id_prefix, faucet_id_suffix, 0, delta_amount_abs], [0, 0, was_added, domain], PERM]
+
+            hperm
+            # => [RATE, RATE, PERM]
+        else
+            # discard values loaded from map: KEY, VALUE0
+            dropw dropw
+            # => [RATE, RATE, PERM]
+        end
+        # => [RATE, RATE, PERM]
+
+        # load iter and has_next
+        loc_load.1
+        # => [iter, RATE, RATE, PERM]
+
+        loc_load.0
+        # => [has_next, iter, RATE, RATE, PERM]
+    end
+
+    # drop iter
+    drop
     # => [RATE, RATE, PERM]
 end
 
@@ -182,4 +271,253 @@ proc.get_item_initial
     # get the item from storage
     swap mul.8 add padw movup.4 mem_loadw
     # => [INIT_VALUE]
+end
+
+# DELTA BOOKKEEPING
+# -------------------------------------------------------------------------------------------------
+
+#! Adds the given asset to the delta.
+#!
+#! Assumes the asset is valid, so it should be called after asset_vault::add_asset.
+#!
+#! Inputs:  [ASSET]
+#! Outputs: []
+#!
+#! Where:
+#! - ASSET is the asset.
+export.add_asset
+    # check if the asset is a fungible asset
+    exec.asset::is_fungible_asset
+    # => [is_fungible_asset, ASSET]
+
+    if.true
+        exec.asset_vault::build_fungible_asset_vault_key swapw
+        # => [ASSET, ASSET_KEY]
+
+        drop drop drop movdn.4
+        # => [ASSET_KEY, amount]
+
+        exec.add_fungible_asset
+        # => []
+    else
+        # TODO: Handle non-fungible assets
+        dropw
+        # => []
+    end
+end
+
+#! Removes the given asset from the delta.
+#!
+#! Assumes the asset is valid, so it should be called after asset_vault::remove_asset
+#! (which would abort if the asset is invalid).
+#!
+#! Inputs:  [ASSET]
+#! Outputs: []
+#!
+#! Where:
+#! - ASSET is the asset.
+export.remove_asset
+    # check if the asset is a fungible asset
+    exec.asset::is_fungible_asset
+    # => [is_fungible_asset, ASSET, vault_root_ptr]
+
+    if.true
+        exec.asset_vault::build_fungible_asset_vault_key swapw
+        # => [ASSET, ASSET_KEY]
+
+        drop drop drop movdn.4
+        # => [ASSET_KEY, amount]
+
+        exec.remove_fungible_asset
+        # => []
+    else
+        # TODO: Handle non-fungible assets
+        dropw
+        # => []
+    end
+end
+
+#! Adds the given amount to the fungible asset delta for the asset identified by the asset key.
+#!
+#! Inputs:  [ASSET_KEY, amount]
+#! Outputs: []
+#!
+#! Where:
+#! - ASSET_KEY is the asset key of the fungible asset.
+#! - amount is the amount by which the fungible asset's amount increases.
+export.add_fungible_asset
+    dupw exec.memory::get_account_delta_fungible_asset_ptr
+    # => [fungible_delta_map_ptr, ASSET_KEY, ASSET_KEY, amount]
+
+    # retrieve the current delta amount
+    # contains_key can be ignored because the default value is a delta amount of 0
+    # VALUE1 is unused so we drop it as well
+    exec.link_map::get drop swapw dropw
+    # => [delta_amount_hi, delta_amount_lo, 0, 0, ASSET_KEY, amount]
+
+    movup.8 u32split
+    # => [amount_hi, amount_lo, delta_amount_hi, delta_amount_lo, 0, 0, ASSET_KEY]
+
+    # compute delta + amount
+    exec.add_asset_amount
+    # => [delta_amount_hi, delta_amount_lo, 0, 0, ASSET_KEY]
+
+    # pad VALUE1 of the link map
+    swapw padw movdnw.2
+    # => [ASSET_KEY, delta_amount_hi, delta_amount_lo, 0, 0, EMPTY_WORD]
+
+    exec.memory::get_account_delta_fungible_asset_ptr
+    # => [fungible_delta_map_ptr, ASSET_KEY, delta_amount_hi, delta_amount_lo, 0, 0, EMPTY_WORD]
+
+    exec.link_map::set drop
+    # => []
+end
+
+#! Subtracts the given amount from the fungible asset delta for the asset identified by the asset key.
+#!
+#! Inputs:  [ASSET_KEY, amount]
+#! Outputs: []
+#!
+#! Where:
+#! - ASSET_KEY is the asset key of the fungible asset.
+#! - amount is the amount by which the fungible asset's amount decreases.
+export.remove_fungible_asset
+    dupw exec.memory::get_account_delta_fungible_asset_ptr
+    # => [fungible_delta_map_ptr, ASSET_KEY, ASSET_KEY, amount]
+
+    # retrieve the current delta amount
+    # contains_key can be ignored because the default value is a delta amount of 0
+    # VALUE1 is unused so we drop it as well
+    exec.link_map::get drop swapw dropw
+    # => [delta_amount_hi, delta_amount_lo, 0, 0, ASSET_KEY, amount]
+
+    movup.8 u32split
+    # => [amount_hi, amount_lo, delta_amount_hi, delta_amount_lo, 0, 0, ASSET_KEY]
+
+    # compute delta - amount
+    exec.sub_asset_amount
+    # => [delta_amount_hi, delta_amount_lo, 0, 0, ASSET_KEY]
+
+    # pad VALUE1 of the link map
+    swapw padw movdnw.2
+    # => [ASSET_KEY, delta_amount_hi, delta_amount_lo, 0, 0, EMPTY_WORD]
+
+    exec.memory::get_account_delta_fungible_asset_ptr
+    # => [fungible_delta_map_ptr, ASSET_KEY, delta_amount_hi, delta_amount_lo, 0, 0, EMPTY_WORD]
+
+    exec.link_map::set drop
+    # => []
+end
+
+# i64 MATH
+# -------------------------------------------------------------------------------------------------
+
+# Asset Amount Deltas can be signed or unsigned and they can be in range [-2^63 + 1, 2^63 - 1]. To make
+# math operations on deltas easy and avoid branches, they are represented using the std::math::u64
+# representation of two u32 limbs. This u64 can be interpreted as an i64 to get the asset delta.
+# In order to get the correct behavior, we use wrapping operations on u64s which ignore the overflow.
+# This means that a calculation such as 100 - 200 + 300 correctly results in an overall delta of 200.
+
+#! Adds amount to the delta.
+#!
+#! Inputs:  [amount_hi, amount_lo, delta_amount_hi, delta_amount_lo]
+#! Outputs: [delta_amount_hi, delta_amount_lo]
+#!
+#! Where:
+#! - amount_{hi, lo} are the u32 limbs of the amount to be added.
+#! - delta_amount_{hi, lo} are the u32 limbs of the delta amount to which amount is added.
+proc.add_asset_amount
+    exec.u64::wrapping_add
+end
+
+#! Subtracts amount from the delta.
+#!
+#! Inputs:  [amount_hi, amount_lo, delta_amount_hi, delta_amount_lo]
+#! Outputs: [delta_amount_hi, delta_amount_lo]
+#!
+#! Where:
+#! - amount_{hi, lo} are the u32 limbs of the amount to be subtracted.
+#! - delta_amount_{hi, lo} are the u32 limbs of the delta amount from which amount is subtracted.
+proc.sub_asset_amount
+    exec.u64::wrapping_sub
+end
+
+#! Computes the absolute value of the given i64 represented by two u32 limbs and returns a
+#! boolean flag indicating whether the value is positive (or unsigned).
+#!
+#! Assumes that x_hi and x_lo can be safely combined into a felt.
+#!
+#! Inputs: [x_hi, x_lo]
+#! Outputs: [is_x_positive, x_abs]
+#!
+#! Where:
+#! - x_{hi, lo} are the u32 limbs of an i64.
+#! - is_x_positive indicates whether the inputs were positive.
+#! - x_abs is the absolute value of the inputs as a felt.
+proc.i64_absolute
+    exec.i64_is_negative
+    # => [is_x_signed, x_hi, x_lo]
+
+    movdn.2 push.0.0
+    # => [0, 0, x_hi, x_lo, is_x_signed]
+
+    dup.3 dup.3
+    # => [x_hi, x_lo, 0, 0, x_hi, x_lo, is_x_signed]
+
+    exec.i64_negate push.0.0
+    # => [0, 0, x_neg_hi, x_neg_lo, 0, 0, x_hi, x_lo, is_x_signed]
+
+    dup.8
+    # => [is_x_signed, 0, 0, x_neg_hi, x_neg_lo, 0, 0, x_hi, x_lo, is_x_signed]
+
+    # If is_x_signed the word with the negated values remains.
+    # If !is_x_signed the word with the original values remains.
+    cdropw drop drop
+    # => [x_abs_hi, x_abs_lo, is_x_signed]
+
+    # reassemble the amount to a felt by multiplying the high part with 2^32 and adding the lo part
+    mul.0x0100000000 add
+    # => [x_abs, is_x_signed]
+
+    swap not
+    # => [is_x_unsigned, x_abs]
+end
+
+#! Returns 1 if the given number is negative (or signed), that is, its most significant bit is set,
+#! 0 otherwise.
+#!
+#! Inputs: [x_hi, x_lo]
+#! Outputs: [is_x_signed, x_hi, x_lo]
+#!
+#! Where:
+#! - x_{hi, lo} are the u32 limbs of an i64.
+#! - is_x_signed indicates whether x is signed.
+proc.i64_is_negative
+    # 0x80000000 is a u32 bitmask with highest bit set to 1 and all others to 0.
+    dup u32and.0x80000000 u32shr.31
+    # => [is_signed, x_hi, x_lo]
+end
+
+#! Negates an i64 represented by two u32 limbs by computing its bitwise NOT and adding 1
+#! according to two complements.
+#!
+#! Inputs: [x_hi, x_lo]
+#! Outputs: [x_hi, x_lo]
+#!
+#! Where:
+#! - x_{hi, lo} are the u32 limbs of an i64.
+proc.i64_negate
+    u32not swap u32not swap
+    # => [x_inverted_hi, x_inverted_lo]
+
+    # Add 1 to get negative x.
+    push.1.0
+    # => [0, 1, x_inverted_hi, x_inverted_lo]
+
+    # This should never overflow except when negating zero.
+    # (Consider this 8-bit example: 0b0000_0000 would become 0b1111_1111
+    # and adding 1 would overflow the byte resulting in 0b0000_0000 again).
+    # This is why we ignore the overflow flag.
+    exec.u64::wrapping_add
+    # => [-x_hi, -x_lo]
 end

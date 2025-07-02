@@ -5,6 +5,8 @@ use.std::mem
 
 use.kernel::account_id
 use.kernel::asset_vault
+use.kernel::asset
+use.kernel::account_delta
 use.kernel::constants
 use.kernel::memory
 
@@ -763,8 +765,13 @@ export.add_asset_to_vault
     exec.asset_vault::add_asset
     # => [ASSET', ASSET]
 
-    # emit event to signal that an asset is being added to the account vault
     swapw
+    # => [ASSET, ASSET']
+
+    dupw exec.account_delta::add_asset
+    # => [ASSET, ASSET']
+
+    # emit event to signal that an asset is being added to the account vault
     emit.ACCOUNT_VAULT_AFTER_ADD_ASSET_EVENT dropw
     # => [ASSET']
 end
@@ -792,6 +799,9 @@ export.remove_asset_from_vault
 
     # remove the asset from the account vault
     exec.asset_vault::remove_asset
+    # => [ASSET]
+
+    dupw exec.account_delta::remove_asset
     # => [ASSET]
 
     # emit event to signal that an asset is being removed from the account vault
