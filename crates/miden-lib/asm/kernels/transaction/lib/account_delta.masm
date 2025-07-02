@@ -123,10 +123,9 @@ proc.update_slot_delta
     if.true
         exec.update_value_slot_delta
     else
-        # TODO: Update delta hasher with map.
-        # drop slot idx
-        drop
+        exec.update_map_slot_delta
     end
+    # => [RATE, RATE, PERM]
 end
 
 #! Updates the given delta hasher with the value storage slot at the provided index.
@@ -169,6 +168,105 @@ proc.update_value_slot_delta
     else
         # drop init value, current value and slot idx
         dropw dropw drop
+        # => [RATE, RATE, PERM]
+    end
+    # => [RATE, RATE, PERM]
+end
+
+#! Updates the given delta hasher with the map storage slot at the provided index.
+#!
+#! Inputs:  [slot_idx, RATE, RATE, PERM]
+#! Outputs: [RATE, RATE, PERM]
+#!
+#! Locals:
+#!   0: slot_idx
+#!   1: has_next
+#!   2: iter
+#!   3: num_changed_entries
+proc.update_map_slot_delta.4
+    # initialize num_changed_entries = 0
+    # this is necessary because this procedure can be called multiple times and the second
+    # invocation shouldn't reuse the first invocation's value
+    push.0 loc_store.3
+    # => [slot_idx, RATE, RATE, PERM]
+
+    dup loc_store.0
+    # => [slot_idx, RATE, RATE, PERM]
+
+    exec.memory::get_account_delta_storage_map_ptr
+    # => [account_delta_storage_map_ptr, RATE, RATE, PERM]
+
+    exec.link_map::iter
+    # => [has_next, iter, RATE, RATE, PERM]
+
+    # enter loop if the link map is not empty
+    while.true
+        exec.link_map::next_key_double_value
+        # => [KEY, INIT_VALUE, NEW_VALUE, has_next, iter, ...]
+
+        # store has_next
+        movup.12 loc_store.1
+        # => [KEY, INIT_VALUE, NEW_VALUE, iter, ...]
+
+        # store iter
+        movup.12 loc_store.2
+        # => [KEY, INIT_VALUE, NEW_VALUE, ...]
+
+        swapw.2
+        # => [NEW_VALUE, INIT_VALUE, KEY, ...]
+
+        eqw not
+        # => [was_changed, NEW_VALUE, INIT_VALUE, KEY, ...]
+
+        # if the key-value pair has actually changed, update the hasher
+        if.true
+            # drop the initial value
+            swapw dropw
+            # => [NEW_VALUE, KEY, RATE, RATE, PERM]
+
+            # increment number of changed entries in local 3
+            loc_load.3 add.1 loc_store.3
+            # => [NEW_VALUE, KEY, RATE, RATE, PERM]
+
+            # drop previous RATE elements
+            swapdw dropw dropw
+            # => [NEW_VALUE, KEY, PERM]
+
+            hperm
+            # => [RATE, RATE, PERM]
+        else
+            # discard the key and init and new value words loaded from the map
+            dropw dropw dropw
+            # => [RATE, RATE, PERM]
+        end
+        # => [RATE, RATE, PERM]
+
+        # load iter and has_next
+        loc_load.2
+        # => [iter, RATE, RATE, PERM]
+
+        loc_load.1
+        # => [has_next, iter, RATE, RATE, PERM]
+    end
+
+    # drop iter
+    drop
+    # => [RATE, RATE, PERM]
+
+    # only include the map slot metadata if there were entries in the map that resulted in an
+    # update to the hasher state
+    loc_load.3 neq.0
+    # => [is_num_changed_entries_non_zero, RATE, RATE, PERM]
+
+    if.true
+        # drop the previous RATE elements
+        dropw dropw
+        # => [PERM]
+
+        push.DOMAIN_MAP loc_load.0 loc_load.3 push.0 padw
+        # => [EMPTY_WORD, [0, num_changed_entries, slot_idx, domain], PERM]
+
+        hperm
         # => [RATE, RATE, PERM]
     end
     # => [RATE, RATE, PERM]
@@ -556,6 +654,69 @@ export.remove_non_fungible_asset
 
     exec.memory::get_account_delta_non_fungible_asset_ptr
     # => [non_fungible_delta_map_ptr, ASSET, was_added, 0, 0, 0, EMPTY_WORD]
+
+    exec.link_map::set drop
+    # => []
+end
+
+#! Updates the storage map delta of the given slot index with the given key-value pair and its
+#! previous value.
+#!
+#! The layout of a link map entry for a given KEY is: [KEY, INIT_VALUE, NEW_VALUE] where INIT_VALUE
+#! represents the initial value for the given KEY at the beginning of transaction execution and
+#! NEW_VALUE is the new value. The delta entry is a NOOP if INIT_VALUE and NEW_VALUE are equal.
+#!
+#! Inputs:  [slot_index, KEY, PREV_VALUE, NEW_VALUE]
+#! Outputs: []
+#!
+#! Where:
+#! - slot_index is the slot index of the storage map slot.
+#! - KEY is the key in the storage map that is being updated.
+#! - PREV_VALUE is the previous value of the key in the storage map that is being updated.
+#! - NEW_VALUE is the new value of the key in the storage map that is being updated.
+export.set_map_item.8
+    # retrieve the link map ptr to the storage map delta for the provided index
+    exec.memory::get_account_delta_storage_map_ptr
+    # => [account_delta_storage_map_ptr, KEY, PREV_VALUE, NEW_VALUE]
+
+    # store map ptr in local
+    loc_store.0
+    # => [KEY, PREV_VALUE, NEW_VALUE]
+
+    # store KEY in local
+    loc_storew.4
+    # => [KEY, PREV_VALUE, NEW_VALUE]
+
+    loc_load.0
+    # => [account_delta_storage_map_ptr, KEY, PREV_VALUE, NEW_VALUE]
+
+    # retrieve the current delta
+    exec.link_map::get
+    # => [contains_key, VALUE0, VALUE1, PREV_VALUE, NEW_VALUE]
+
+    movdn.12
+    # => [VALUE0, VALUE1, PREV_VALUE, contains_key, NEW_VALUE]
+
+    # VALUE1 was the previous "new value" if this key was already updated, so in any case,
+    # we can drop it since this update overwrites the previous one
+    swapw dropw
+    # => [VALUE0, PREV_VALUE, contains_key, NEW_VALUE]
+
+    movup.8
+    # => [contains_key, VALUE0, PREV_VALUE, NEW_VALUE]
+
+    # contains_key determines whether this is the first update to this KEY
+    # if this is the first update, PREV_VALUE is the *initial* value of the key-value pair
+    # if this is not the first update, VALUE0 is the initial value, so we want to store it back
+    # use cdropw to selectively keep the word that represents the initial value
+    # If contains_key VALUE0 remains.
+    # If !contains_key PREV_VALUE remains.
+    cdropw
+    # => [INITIAL_VALUE, NEW_VALUE]
+
+    # load key and index from locals
+    padw loc_loadw.4 loc_load.0
+    # => [account_delta_storage_map_ptr, KEY, INITIAL_VALUE, NEW_VALUE]
 
     exec.link_map::set drop
     # => []
