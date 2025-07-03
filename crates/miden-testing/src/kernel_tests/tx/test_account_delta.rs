@@ -64,24 +64,32 @@ fn delta_nonce() -> anyhow::Result<()> {
 }
 
 /// Tests that setting new values for value storage slots results in the correct delta.
+///
+/// - Slot 0: [2,4,6,8]  -> [3,4,5,6] -> EMPTY_WORD -> Delta: EMPTY_WORD
+/// - Slot 1: EMPTY_WORD -> [3,4,5,6]               -> Delta: [3,4,5,6]
+/// - Slot 2: [1,3,5,7]  -> [1,3,5,7]               -> Delta: None
+/// - Slot 3: [1,3,5,7]  -> [2,3,4,5] -> [1,3,5,7]  -> Delta: None
 #[test]
 fn storage_delta_for_value_slots() -> anyhow::Result<()> {
-    // Slot 0 is updated from non-empty word to empty word.
     let slot_0_init_value = word([2, 4, 6, 8u32]);
+    let slot_0_tmp_value = word([3, 4, 5, 6u32]);
     let slot_0_final_value = EMPTY_WORD;
 
-    // Slot 1 is updated from empty word to non-empty word.
     let slot_1_init_value = EMPTY_WORD;
     let slot_1_final_value = word([3, 4, 5, 6u32]);
 
-    // Slot 2 is updated to itself.
     let slot_2_init_value = word([1, 3, 5, 7u32]);
     let slot_2_final_value = slot_2_init_value;
+
+    let slot_3_init_value = word([1, 3, 5, 7u32]);
+    let slot_3_tmp_value = word([2, 3, 4, 5u32]);
+    let slot_3_final_value = slot_3_init_value;
 
     let TestSetup { mock_chain, account_id } = setup_storage_test(vec![
         StorageSlot::Value(slot_0_init_value),
         StorageSlot::Value(slot_1_init_value),
         StorageSlot::Value(slot_2_init_value),
+        StorageSlot::Value(slot_3_init_value),
     ]);
 
     let tx_script = compile_tx_script(format!(
@@ -111,15 +119,29 @@ fn storage_delta_for_value_slots() -> anyhow::Result<()> {
           exec.set_item
           # => []
 
+          push.{tmp_slot_3_value}
+          push.3
+          # => [index, VALUE]
+          exec.set_item
+          # => []
+
+          push.{final_slot_3_value}
+          push.3
+          # => [index, VALUE]
+          exec.set_item
+          # => []
+
           # nonce must increase for state changing transactions
           push.1 exec.incr_nonce
       end
       ",
         // Set slot 0 to some other value initially.
-        tmp_slot_0_value = word_to_masm_push_string(&slot_1_final_value),
+        tmp_slot_0_value = word_to_masm_push_string(&slot_0_tmp_value),
         final_slot_0_value = word_to_masm_push_string(&slot_0_final_value),
         final_slot_1_value = word_to_masm_push_string(&slot_1_final_value),
-        final_slot_2_value = word_to_masm_push_string(&slot_2_final_value)
+        final_slot_2_value = word_to_masm_push_string(&slot_2_final_value),
+        tmp_slot_3_value = word_to_masm_push_string(&slot_3_tmp_value),
+        final_slot_3_value = word_to_masm_push_string(&slot_3_final_value),
     ))?;
 
     let executed_tx = mock_chain
@@ -138,7 +160,7 @@ fn storage_delta_for_value_slots() -> anyhow::Result<()> {
         .map(|(k, v)| (*k, *v))
         .collect::<Vec<_>>();
 
-    // Note that slot 2 is absent because its value hasn't changed.
+    // Note that slots 2 and 3 are absent because their values haven't effectively changed.
     assert_eq!(storage_values_delta, &[(0u8, slot_0_final_value), (1u8, slot_1_final_value)]);
 
     validate_account_delta(&executed_tx).context("failed to validate delta")?;
@@ -146,13 +168,16 @@ fn storage_delta_for_value_slots() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Tests that setting new values for value storage slots results in the correct delta.
+/// Tests that setting new values for map storage slots results in the correct delta.
+///
 /// - Slot 0: key0: EMPTY_WORD -> [1,2,3,4]              -> Delta: [1,2,3,4]
 /// - Slot 0: key1: EMPTY_WORD -> [1,2,3,4] -> [2,3,4,5] -> Delta: [2,3,4,5]
 /// - Slot 1: key2: [1,2,3,4]  -> [1,2,3,4]              -> Delta: None
 /// - Slot 1: key3: [1,2,3,4]  -> EMPTY_WORD             -> Delta: EMPTY_WORD
-/// - TODO (once account delta tracker is updated):
-///   - Slot 1: key4: [1,2,3,4]  -> [2,3,4,5] -> [1,2,3,4] -> Delta: None
+/// - Slot 1: key4: [1,2,3,4]  -> [2,3,4,5] -> [1,2,3,4] -> Delta: None
+/// - Slot 2: key5: [1,2,3,4]  -> [2,3,4,5] -> [1,2,3,4] -> Delta: None
+///   - key5 and key4 are the same scenario, but in different slots. In particular, slot 2's delta
+///     map will be empty after normalization and so it shouldn't be present in the delta at all.
 #[test]
 fn storage_delta_for_map_slots() -> anyhow::Result<()> {
     // Test with random keys to make sure the ordering in the MASM and Rust implementations
@@ -161,17 +186,25 @@ fn storage_delta_for_map_slots() -> anyhow::Result<()> {
     let key1 = Digest::from(word(winter_rand_utils::rand_array()));
     let key2 = Digest::from(word(winter_rand_utils::rand_array()));
     let key3 = Digest::from(word(winter_rand_utils::rand_array()));
+    let key4 = Digest::from(word(winter_rand_utils::rand_array()));
+    let key5 = Digest::from(word(winter_rand_utils::rand_array()));
 
     let key0_init_value = EMPTY_WORD;
     let key1_init_value = EMPTY_WORD;
     let key2_init_value = word([1, 2, 3, 4u32]);
     let key3_init_value = word([1, 2, 3, 4u32]);
+    let key4_init_value = word([1, 2, 3, 4u32]);
+    let key5_init_value = word([1, 2, 3, 4u32]);
 
     let key0_final_value = word([1, 2, 3, 4u32]);
     let key1_tmp_value = word([1, 2, 3, 4u32]);
     let key1_final_value = word([2, 3, 4, 5u32]);
     let key2_final_value = key2_init_value;
     let key3_final_value = EMPTY_WORD;
+    let key4_tmp_value = word([2, 3, 4, 5u32]);
+    let key4_final_value = word([1, 2, 3, 4u32]);
+    let key5_tmp_value = word([2, 3, 4, 5u32]);
+    let key5_final_value = word([1, 2, 3, 4u32]);
 
     let mut map0 = StorageMap::new();
     map0.insert(key0, key0_init_value);
@@ -180,12 +213,17 @@ fn storage_delta_for_map_slots() -> anyhow::Result<()> {
     let mut map1 = StorageMap::new();
     map1.insert(key2, key2_init_value);
     map1.insert(key3, key3_init_value);
+    map1.insert(key4, key4_init_value);
+
+    let mut map2 = StorageMap::new();
+    map2.insert(key5, key5_init_value);
 
     let TestSetup { mock_chain, account_id } = setup_storage_test(vec![
         StorageSlot::Map(map0),
         StorageSlot::Map(map1),
+        StorageSlot::Map(map2),
         // Include an empty map which does not receive any updates, to test that the "metadata
-        // header" in the delta commitemnt is not appended if there are no updates to a map
+        // header" in the delta committment is not appended if there are no updates to a map
         // slot.
         StorageSlot::Map(StorageMap::new()),
     ]);
@@ -218,6 +256,26 @@ fn storage_delta_for_map_slots() -> anyhow::Result<()> {
           exec.set_map_item
           # => []
 
+          push.{key4_tmp_value}.{key4}.1
+          # => [index, KEY, VALUE]
+          exec.set_map_item
+          # => []
+
+          push.{key4_value}.{key4}.1
+          # => [index, KEY, VALUE]
+          exec.set_map_item
+          # => []
+
+          push.{key5_tmp_value}.{key5}.2
+          # => [index, KEY, VALUE]
+          exec.set_map_item
+          # => []
+
+          push.{key5_value}.{key5}.2
+          # => [index, KEY, VALUE]
+          exec.set_map_item
+          # => []
+
           # nonce must increase for state changing transactions
           push.1 exec.incr_nonce
       end
@@ -226,11 +284,17 @@ fn storage_delta_for_map_slots() -> anyhow::Result<()> {
         key1 = word_to_masm_push_string(&key1),
         key2 = word_to_masm_push_string(&key2),
         key3 = word_to_masm_push_string(&key3),
+        key4 = word_to_masm_push_string(&key4),
+        key5 = word_to_masm_push_string(&key5),
         key0_value = word_to_masm_push_string(&key0_final_value),
         key1_tmp_value = word_to_masm_push_string(&key1_tmp_value),
         key1_value = word_to_masm_push_string(&key1_final_value),
         key2_value = word_to_masm_push_string(&key2_final_value),
         key3_value = word_to_masm_push_string(&key3_final_value),
+        key4_tmp_value = word_to_masm_push_string(&key4_tmp_value),
+        key4_value = word_to_masm_push_string(&key4_final_value),
+        key5_tmp_value = word_to_masm_push_string(&key5_tmp_value),
+        key5_value = word_to_masm_push_string(&key5_final_value),
     ))?;
 
     let executed_tx = mock_chain
@@ -240,6 +304,11 @@ fn storage_delta_for_map_slots() -> anyhow::Result<()> {
         .execute()
         .context("failed to execute transaction")?;
     let maps_delta = executed_tx.account_delta().storage().maps();
+
+    // Note that there should be no delta for map2 since it was normalized to an empty map which
+    // should be removed.
+    assert_eq!(maps_delta.len(), 2);
+    assert!(maps_delta.get(&2).is_none(), "map2 should not have a delta");
 
     let mut map0_delta =
         maps_delta.get(&0).expect("delta for map 0 should exist").clone().into_map();

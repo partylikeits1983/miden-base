@@ -174,6 +174,11 @@ impl AccountStorageDelta {
             }
         }
     }
+
+    /// Consumes self and returns the underlying parts of the storage delta.
+    pub fn into_parts(self) -> (BTreeMap<u8, Word>, BTreeMap<u8, StorageMapDelta>) {
+        (self.values, self.maps)
+    }
 }
 
 impl Default for AccountStorageDelta {
@@ -303,6 +308,11 @@ impl StorageMapDelta {
     pub fn merge(&mut self, other: Self) {
         // Aggregate the changes into a map such that `other` overwrites self.
         self.0.extend(other.0);
+    }
+
+    /// Returns a mutable reference to the underlying map.
+    pub fn as_map_mut(&mut self) -> &mut BTreeMap<LexicographicWord<Digest>, Word> {
+        &mut self.0
     }
 
     /// Returns an iterator of all the cleared keys in the storage map.
