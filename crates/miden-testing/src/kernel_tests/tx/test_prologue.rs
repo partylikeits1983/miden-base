@@ -30,34 +30,51 @@ use miden_lib::{
     },
 };
 use miden_objects::{
-    EMPTY_WORD, WORD_SIZE,
+    EMPTY_WORD, FieldElement, WORD_SIZE,
     account::{
         Account, AccountBuilder, AccountId, AccountIdVersion, AccountProcedureInfo,
         AccountStorageMode, AccountType, StorageSlot,
     },
+    asset::FungibleAsset,
     testing::{
         account_component::AccountMockComponent,
-        account_id::{ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET},
+        account_id::{
+            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET,
+            ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE, ACCOUNT_ID_SENDER,
+        },
         constants::FUNGIBLE_FAUCET_INITIAL_BALANCE,
     },
     transaction::{AccountInputs, TransactionArgs, TransactionScript},
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use vm_processor::{AdviceInputs, Digest, ExecutionError, ONE, Process};
+use vm_processor::{AdviceInputs, Digest, ExecutionError, Process};
 
 use super::{Felt, Word, ZERO};
 use crate::{
     MockChain, TransactionContext, TransactionContextBuilder, assert_execution_error,
-    kernel_tests::tx::read_root_mem_word, utils::input_note_data_ptr,
+    kernel_tests::tx::read_root_mem_word,
+    utils::{create_p2any_note, input_note_data_ptr},
 };
 
 #[test]
 fn test_transaction_prologue() {
-    let mut tx_context = TransactionContextBuilder::with_standard_account(ONE)
-        .with_mock_notes_preserved()
-        .build();
-
+    let mut tx_context = {
+        let account = Account::mock(
+            ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
+            Felt::ONE,
+            TransactionKernel::testing_assembler(),
+        );
+        let input_note_1 =
+            create_p2any_note(ACCOUNT_ID_SENDER.try_into().unwrap(), &[FungibleAsset::mock(100)]);
+        let input_note_2 =
+            create_p2any_note(ACCOUNT_ID_SENDER.try_into().unwrap(), &[FungibleAsset::mock(100)]);
+        let input_note_3 =
+            create_p2any_note(ACCOUNT_ID_SENDER.try_into().unwrap(), &[FungibleAsset::mock(111)]);
+        TransactionContextBuilder::new(account)
+            .extend_input_notes(vec![input_note_1, input_note_2, input_note_3])
+            .build()
+    };
     let code = "
         use.kernel::prologue
 
@@ -693,7 +710,7 @@ pub fn create_account_invalid_seed() {
 
 #[test]
 fn test_get_blk_version() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build();
     let code = "
     use.kernel::memory
     use.kernel::prologue
@@ -714,7 +731,7 @@ fn test_get_blk_version() {
 
 #[test]
 fn test_get_blk_timestamp() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build();
     let code = "
     use.kernel::memory
     use.kernel::prologue
