@@ -30,8 +30,9 @@ pub use outputs::{
     parse_final_account_header,
 };
 
-mod errors;
-pub use errors::{TransactionEventError, TransactionKernelError, TransactionTraceParsingError};
+pub use crate::errors::{
+    TransactionEventError, TransactionKernelError, TransactionTraceParsingError,
+};
 
 mod procedures;
 
