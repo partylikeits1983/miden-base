@@ -118,7 +118,10 @@ pub fn compute_current_commitment() -> miette::Result<()> {
     let tx_context_builder = TransactionContextBuilder::new(account);
     let tx_script =
         TransactionScript::compile(tx_script, tx_context_builder.assembler()).into_diagnostic()?;
-    let tx_context = tx_context_builder.tx_script(tx_script).build();
+    let tx_context = tx_context_builder
+        .tx_script(tx_script)
+        .build()
+        .map_err(|err| miette::miette!("{err}"))?;
 
     tx_context.execute().into_diagnostic().wrap_err("failed to execute code")?;
 
