@@ -45,6 +45,7 @@
 - Implement serialization for `LexicographicWord` (#1524).
 - Make `Account:increment_nonce()` method public ([#1533](https://github.com/0xMiden/miden-base/pull/1533)).
 - Define the commitment to an empty account delta as `EMPTY_WORD` ([#1528](https://github.com/0xMiden/miden-base/pull/1528)).
+- [BREAKING] Rename `account_get_current_commitment` to `account_compute_current_commitment` and include the latest storage commitment in the returned commitment ([#1529](https://github.com/0xMiden/miden-base/pull/1529)).
 
 ## 0.9.5 (2025-06-20) - `miden-lib` crate only
 
