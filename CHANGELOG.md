@@ -1,56 +1,65 @@
 # Changelog
 
-## 0.10.0 (TBD)
+## 0.10.0 (2025-07-08)
 
-- [BREAKING] Refactor `NoteTag` to an enum ([#1322](https://github.com/0xMiden/miden-base/pull/1322)).
-- Add `bench-prover` crate to benchmark proving times ([#1378](https://github.com/0xMiden/miden-base/pull/1378)).
-- [BREAKING] Remove `AccountIdAnchor` from account ID generation process ([#1391](https://github.com/0xMiden/miden-base/pull/1391)).
-- Allow NOOP transactions and state-updating transactions against the same account in the same block ([#1393](https://github.com/0xMiden/miden-base/pull/1393)).
-- Implement map based on a sorted linked list in transaction kernel library ([#1396](https://github.com/0xMiden/miden-base/pull/1396), [#1428](https://github.com/0xMiden/miden-base/pull/1428), [#1478](https://github.com/0xMiden/miden-base/pull/1478)).
-- Add P2IDE standard note ([#1421](https://github.com/0xMiden/miden-base/pull/1421)).
+### Features
+
+- Added `bench-prover` crate to benchmark proving times ([#1378](https://github.com/0xMiden/miden-base/pull/1378)).
+- Allowed NOOP transactions and state-updating transactions against the same account in the same block ([#1393](https://github.com/0xMiden/miden-base/pull/1393)).
+- Added P2IDE standard note ([#1421](https://github.com/0xMiden/miden-base/pull/1421)).
+- [BREAKING] Implemented transaction script arguments for the `TransactionScript` ([#1406](https://github.com/0xMiden/miden-base/pull/1406)).
+- [BREAKING] Implemented in-kernel account delta tracking ([#1471](https://github.com/0xMiden/miden-base/pull/1471), [#1404](https://github.com/0xMiden/miden-base/pull/1404), [#1460](https://github.com/0xMiden/miden-base/pull/1460), [#1481](https://github.com/0xMiden/miden-base/pull/1481), [#1491](https://github.com/0xMiden/miden-base/pull/1491)).
+- Add `with_auth_component` to `AccountBuilder` ([#1480](https://github.com/0xMiden/miden-base/pull/1480)).
+- Added `ScriptBuilder` to streamline building note & transaction scripts ([#1507](https://github.com/0xMiden/miden-base/pull/1507)).
+- Added procedure `was_procedure_called` to `miden::account` library module ([#1521](https://github.com/0xMiden/miden-base/pull/1521)).
+- Enabled loading MASM source files into `TransactionKernel::assembler` for better errors ([#1527]((https://github.com/0xMiden/miden-base/pull/1527))).
+
+### Changes
+
+- [BREAKING] Refactored `NoteTag` to an enum ([#1322](https://github.com/0xMiden/miden-base/pull/1322)).
+- [BREAKING] Removed `AccountIdAnchor` from account ID generation process ([#1391](https://github.com/0xMiden/miden-base/pull/1391)).
+- Implemented map based on a sorted linked list in transaction kernel library ([#1396](https://github.com/0xMiden/miden-base/pull/1396), [#1428](https://github.com/0xMiden/miden-base/pull/1428), [#1478](https://github.com/0xMiden/miden-base/pull/1478)).
 - Added shutdown configuration options to the `miden-proving-service` proxy ([#1405](https://github.com/0xMiden/miden-base/pull/1405)).
-- [BREAKING] Implement transaction script arguments for the `TransactionScript` ([#1406](https://github.com/0xMiden/miden-base/pull/1406)).
-- Add support for workers configuration in the proxy with environment variables ([#1412](https://github.com/0xMiden/miden-base/pull/1412)).
-- Implement Display for `NoteType` ([#1420](https://github.com/0xMiden/miden-base/pull/1420)).
-- [BREAKING] Remove `NoteExecutionMode` from `from_account_id` ([#1422](https://github.com/0xMiden/miden-base/pull/1422)).
-- [BREAKING] Refactor transaction kernel advice inputs ([#1425](https://github.com/0xMiden/miden-base/pull/1425)).
-- [BREAKING] Move transaction script argument from `TransactionScript` to `TransactionArgs`. ([#1426](https://github.com/0xMiden/miden-base/pull/1426)).
-- [BREAKING] Remove transaction inputs from `TransactionScript`. ([#1426](https://github.com/0xMiden/miden-base/pull/1426)).
-- Remove miden-proving-service binary crate and miden-proving-service-client crate ([#1427](https://github.com/0xMiden/miden-base/pull/1427)).
-- Remove doc update checks on CI ([#1435](https://github.com/0xMiden/miden-base/pull/1435)).
-- [BREAKING] Introduce `ScriptMastForestStore` and refactor MAST forest provisioning in the `TransactionExecutor` ([#1438](https://github.com/0xMiden/miden-base/pull/1438)).
-- [BREAKING] Allow list of keys in `AccountFile` ([#1451](https://github.com/0xMiden/miden-base/pull/1451)).
+- Added support for workers configuration in the proxy with environment variables ([#1412](https://github.com/0xMiden/miden-base/pull/1412)).
+- Implemented `Display` for `NoteType` ([#1420](https://github.com/0xMiden/miden-base/pull/1420)).
+- [BREAKING] Removed `NoteExecutionMode` from `from_account_id` ([#1422](https://github.com/0xMiden/miden-base/pull/1422)).
+- [BREAKING] Refactored transaction kernel advice inputs ([#1425](https://github.com/0xMiden/miden-base/pull/1425)).
+- [BREAKING] Moved transaction script argument from `TransactionScript` to `TransactionArgs`. ([#1426](https://github.com/0xMiden/miden-base/pull/1426)).
+- [BREAKING] Removed transaction inputs from `TransactionScript`. ([#1426](https://github.com/0xMiden/miden-base/pull/1426)).
+- Removed miden-proving-service binary crate and miden-proving-service-client crate ([#1427](https://github.com/0xMiden/miden-base/pull/1427)).
+- Removed doc update checks on CI ([#1435](https://github.com/0xMiden/miden-base/pull/1435)).
+- [BREAKING] Introduced `ScriptMastForestStore` and refactor MAST forest provisioning in the `TransactionExecutor` ([#1438](https://github.com/0xMiden/miden-base/pull/1438)).
+- [BREAKING] Allowed list of keys in `AccountFile` ([#1451](https://github.com/0xMiden/miden-base/pull/1451)).
 - [BREAKING] `TransactionHost::new` now expects `&PartialAccount` instead `AccountHeader` ([#1452](https://github.com/0xMiden/miden-base/pull/1452)).
 - Load account and input notes advice maps into the advice provider before executing them ([#1452](https://github.com/0xMiden/miden-base/pull/1452)).
-- Support private accounts in `MockChain` ([#1453](https://github.com/0xMiden/miden-base/pull/1453)).
-- Improve error message quality in `CodeExecutor::run` and `TransactionContext::execute_code` ([#1458](https://github.com/0xMiden/miden-base/pull/1458)).
-- [BREAKING] Forbid the execution of the empty transactions ([#1459](https://github.com/0xMiden/miden-base/pull/1459)).
-- Temporarily bump ACCOUNT_UPDATE_MAX_SIZE to 256 KiB for compiler testing ([#1464](https://github.com/0xMiden/miden-base/pull/1464)).
+- Added support for private accounts in `MockChain` ([#1453](https://github.com/0xMiden/miden-base/pull/1453)).
+- Improved error message quality in `CodeExecutor::run` and `TransactionContext::execute_code` ([#1458](https://github.com/0xMiden/miden-base/pull/1458)).
+- Temporarily bumped ACCOUNT_UPDATE_MAX_SIZE to 256 KiB for compiler testing ([#1464](https://github.com/0xMiden/miden-base/pull/1464)).
 - [BREAKING] `TransactionExecutor` now holds plain references instead of `Arc` for its trait objects ([#1469](https://github.com/0xMiden/miden-base/pull/1469)).
-- [BREAKING] Implemented in-kernel account delta tracking ([#1471](https://github.com/0xMiden/miden-base/pull/1471), [#1404](https://github.com/0xMiden/miden-base/pull/1404), [#1460](https://github.com/0xMiden/miden-base/pull/1460), [#1481](https://github.com/0xMiden/miden-base/pull/1481), [#1491](https://github.com/0xMiden/miden-base/pull/1491)).
 - [BREAKING] Store account ID in account delta ([#1493](https://github.com/0xMiden/miden-base/pull/1493)).
-- [BREAKING] Remove P2IDR and replace with P2IDE ([#1483](https://github.com/0xMiden/miden-base/pull/1483)).
-- [BREAKING] Refactor nonce in delta from `Option<Felt>` to `Felt` ([#1492](https://github.com/0xMiden/miden-base/pull/1492)).
-- Normalize account deltas to avoid including no-op updates ([#1496](https://github.com/0xMiden/miden-base/pull/1496)).
+- [BREAKING] Removed P2IDR and replace with P2IDE ([#1483](https://github.com/0xMiden/miden-base/pull/1483)).
+- [BREAKING] Refactored nonce in delta from `Option<Felt>` to `Felt` ([#1492](https://github.com/0xMiden/miden-base/pull/1492)).
+- Normalized account deltas to avoid including no-op updates ([#1496](https://github.com/0xMiden/miden-base/pull/1496)).
 - Added `Note::is_network_note()` accessor ([#1485](https://github.com/0xMiden/miden-base/pull/1485)).
-- Add `with_auth_component` to `AccountBuilder` ([#1480](https://github.com/0xMiden/miden-base/pull/1480)).
-- [BREAKING] Refactor account authentication to require a procedure containing `auth__` in its name ([#1480](https://github.com/0xMiden/miden-base/pull/1480)).
-- [BREAKING] Update handling of the shared modules ([#1490](https://github.com/0xMiden/miden-base/pull/1490)).
-- [BREAKING] Refactor transaction to output `ACCOUNT_UPDATE_COMMITMENT` ([#1500](https://github.com/0xMiden/miden-base/pull/1500)).
+- [BREAKING] Refactored account authentication to require a procedure containing `auth__` in its name ([#1480](https://github.com/0xMiden/miden-base/pull/1480)).
+- [BREAKING] Updated handling of the shared modules ([#1490](https://github.com/0xMiden/miden-base/pull/1490)).
+- [BREAKING] Refactored transaction to output `ACCOUNT_UPDATE_COMMITMENT` ([#1500](https://github.com/0xMiden/miden-base/pull/1500)).
 - Added a new constructor for `TransactionExecutor` that accepts `ExecutionOptions` ([#1502](https://github.com/0xMiden/miden-base/pull/1502)).
-- Added `ScriptBuilder` to streamline building note & transaction scripts ([#1507](https://github.com/0xMiden/miden-base/pull/1507)).
-- [BREAKING] Introduce errors in `MockChain` API ([#1508](https://github.com/0xMiden/miden-base/pull/1508)).
+- [BREAKING] Introduced errors in `MockChain` API ([#1508](https://github.com/0xMiden/miden-base/pull/1508)).
 - [BREAKING] `TransactionAdviceInputs` cannot return `Err` anymore ([#1517](https://github.com/0xMiden/miden-base/pull/1517)).
-- Added procedure `was_procedure_called` to `miden::account` library module ([#1521](https://github.com/0xMiden/miden-base/pull/1521)).
-- Implement serialization for `LexicographicWord` ([#1524](https://github.com/0xMiden/miden-base/pull/1524)).
-- Make `Account:increment_nonce()` method public ([#1533](https://github.com/0xMiden/miden-base/pull/1533)).
-- Define the commitment to an empty account delta as `EMPTY_WORD` ([#1528](https://github.com/0xMiden/miden-base/pull/1528)).
-- [BREAKING] Rename `account_get_current_commitment` to `account_compute_current_commitment` and include the latest storage commitment in the returned commitment ([#1529](https://github.com/0xMiden/miden-base/pull/1529)).
-- Load MASM source files into `TransactionKernel::assembler` for better errors ([#1527]((https://github.com/0xMiden/miden-base/pull/1527))).
+- Implemented serialization for `LexicographicWord` ([#1524](https://github.com/0xMiden/miden-base/pull/1524)).
+- Made `Account:increment_nonce()` method public ([#1533](https://github.com/0xMiden/miden-base/pull/1533)).
+- Defined the commitment to an empty account delta as `EMPTY_WORD` ([#1528](https://github.com/0xMiden/miden-base/pull/1528)).
+- [BREAKING] Renamed `account_get_current_commitment` to `account_compute_current_commitment` and include the latest storage commitment in the returned commitment ([#1529](https://github.com/0xMiden/miden-base/pull/1529)).
 - [BREAKING] Remove `create_note` from `BasicWallet`, expose it and `add_asset_to_note` in `miden::tx` ([#1525](https://github.com/0xMiden/miden-base/pull/1525)).
 - [BREAKING] Remove `create_note` from `BasicWallet`, expose it and `add_asset_to_note` in `miden::tx` (#1525).
 - Add a new auth component `RpoFalcon512ProcedureAcl` (#1531).
 - [BREAKING] Change `BasicFungibleFaucet` to use `RpoFalcon512ProcedureAcl` for authentication (#1531).
+
+### Fixes
+
+- [BREAKING] Forbid the execution of the empty transactions ([#1459](https://github.com/0xMiden/miden-base/pull/1459)).
+
 
 ## 0.9.5 (2025-06-20) - `miden-lib` crate only
 
