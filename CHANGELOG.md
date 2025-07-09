@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.11.0 (TBD)
+
 ## 0.10.0 (2025-07-08)
 
 ### Features
@@ -59,7 +61,6 @@
 ### Fixes
 
 - [BREAKING] Forbid the execution of the empty transactions ([#1459](https://github.com/0xMiden/miden-base/pull/1459)).
-
 
 ## 0.9.5 (2025-06-20) - `miden-lib` crate only
 
