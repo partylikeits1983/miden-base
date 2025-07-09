@@ -6,10 +6,12 @@ use crate::{
     account::AccountHeader,
     block::BlockNumber,
     note::{
-        Note, NoteAssets, NoteHeader, NoteId, NoteMetadata, PartialNote, compute_note_commitment,
+        Note, NoteAssets, NoteHeader, NoteId, NoteMetadata, NoteRecipient, PartialNote,
+        compute_note_commitment,
     },
     utils::serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
+
 // TRANSACTION OUTPUTS
 // ================================================================================================
 
@@ -18,6 +20,8 @@ use crate::{
 pub struct TransactionOutputs {
     /// Information related to the account's final state.
     pub account: AccountHeader,
+    /// The commitment to the delta computed by the transaction kernel.
+    pub account_delta_commitment: Digest,
     /// Set of output notes created by the transaction.
     pub output_notes: OutputNotes,
     /// Defines up to which block the transaction is considered valid.
@@ -27,6 +31,7 @@ pub struct TransactionOutputs {
 impl Serializable for TransactionOutputs {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         self.account.write_into(target);
+        self.account_delta_commitment.write_into(target);
         self.output_notes.write_into(target);
         self.expiration_block_num.write_into(target);
     }
@@ -35,11 +40,13 @@ impl Serializable for TransactionOutputs {
 impl Deserializable for TransactionOutputs {
     fn read_from<R: ByteReader>(source: &mut R) -> Result<Self, DeserializationError> {
         let account = AccountHeader::read_from(source)?;
+        let account_delta_commitment = Digest::read_from(source)?;
         let output_notes = OutputNotes::read_from(source)?;
         let expiration_block_num = BlockNumber::read_from(source)?;
 
         Ok(Self {
             account,
+            account_delta_commitment,
             output_notes,
             expiration_block_num,
         })
@@ -137,27 +144,6 @@ impl Deserializable for OutputNotes {
     }
 }
 
-// HELPER FUNCTIONS
-// ------------------------------------------------------------------------------------------------
-
-/// Build a commitment to output notes.
-///
-/// For a non-empty list of notes, this is a sequential hash of (note_id, metadata) tuples for the
-/// notes created in a transaction. For an empty list, [EMPTY_WORD] is returned.
-fn build_output_notes_commitment(notes: &[OutputNote]) -> Digest {
-    if notes.is_empty() {
-        return Digest::default();
-    }
-
-    let mut elements: Vec<Felt> = Vec::with_capacity(notes.len() * 8);
-    for note in notes.iter() {
-        elements.extend_from_slice(note.id().as_elements());
-        elements.extend_from_slice(&Word::from(note.metadata()));
-    }
-
-    Hasher::hash_elements(&elements)
-}
-
 // OUTPUT NOTE
 // ================================================================================================
 
@@ -194,7 +180,21 @@ impl OutputNote {
         }
     }
 
-    /// Value that represents under which condition a note can be consumed.
+    /// Returns the recipient of the precessed [`Full`](OutputNote::Full) output note. Returns
+    /// [`None`] if the note type is not [`Full`](OutputNote::Full).
+    ///
+    /// See [crate::note::NoteRecipient] for more details.
+    pub fn recipient(&self) -> Option<&NoteRecipient> {
+        match self {
+            OutputNote::Full(note) => Some(note.recipient()),
+            OutputNote::Partial(_) => None,
+            OutputNote::Header(_) => None,
+        }
+    }
+
+    /// Returns the recipient digest of the processed [`Full`](OutputNote::Full) or
+    /// [`Partial`](OutputNote::Partial) output note. Returns [`None`] if the note type is
+    /// [`Header`](OutputNote::Header).
     ///
     /// See [crate::note::NoteRecipient] for more details.
     pub fn recipient_digest(&self) -> Option<Digest> {
@@ -286,5 +286,63 @@ impl Deserializable for OutputNote {
             HEADER => Ok(OutputNote::Header(NoteHeader::read_from(source)?)),
             v => Err(DeserializationError::InvalidValue(format!("invalid note type: {v}"))),
         }
+    }
+}
+
+// HELPER FUNCTIONS
+// ================================================================================================
+
+/// Build a commitment to output notes.
+///
+/// For a non-empty list of notes, this is a sequential hash of (note_id, metadata) tuples for the
+/// notes created in a transaction. For an empty list, [EMPTY_WORD] is returned.
+fn build_output_notes_commitment(notes: &[OutputNote]) -> Digest {
+    if notes.is_empty() {
+        return Digest::default();
+    }
+
+    let mut elements: Vec<Felt> = Vec::with_capacity(notes.len() * 8);
+    for note in notes.iter() {
+        elements.extend_from_slice(note.id().as_elements());
+        elements.extend_from_slice(&Word::from(note.metadata()));
+    }
+
+    Hasher::hash_elements(&elements)
+}
+
+// TESTS
+// ================================================================================================
+
+#[cfg(test)]
+mod output_notes_tests {
+    use anyhow::Context;
+    use assembly::Assembler;
+    use assert_matches::assert_matches;
+
+    use super::OutputNotes;
+    use crate::{
+        TransactionOutputError,
+        account::AccountId,
+        testing::{account_id::ACCOUNT_ID_SENDER, note::NoteBuilder},
+        transaction::OutputNote,
+    };
+
+    #[test]
+    fn test_duplicate_output_notes() -> anyhow::Result<()> {
+        let mock_account_id: AccountId = ACCOUNT_ID_SENDER.try_into().unwrap();
+
+        let mock_note = NoteBuilder::new(mock_account_id, &mut rand::rng())
+            .build(&Assembler::default())
+            .context("failed to create mock note")?;
+        let mock_note_id = mock_note.id();
+        let mock_note_clone = mock_note.clone();
+
+        let error =
+            OutputNotes::new(vec![OutputNote::Full(mock_note), OutputNote::Full(mock_note_clone)])
+                .expect_err("input notes creation should fail");
+
+        assert_matches!(error, TransactionOutputError::DuplicateOutputNote(note_id) if note_id == mock_note_id);
+
+        Ok(())
     }
 }

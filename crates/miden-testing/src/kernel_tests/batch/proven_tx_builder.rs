@@ -1,10 +1,10 @@
 use alloc::vec::Vec;
 
 use anyhow::Context;
-use miden_crypto::merkle::MerklePath;
 use miden_objects::{
     account::AccountId,
     block::BlockNumber,
+    crypto::merkle::MerklePath,
     note::{Note, NoteInclusionProof, Nullifier},
     transaction::{InputNote, OutputNote, ProvenTransaction, ProvenTransactionBuilder},
     vm::ExecutionProof,
@@ -97,6 +97,7 @@ impl MockProvenTxBuilder {
             self.account_id,
             self.initial_account_commitment,
             self.final_account_commitment,
+            Digest::default(),
             BlockNumber::from(0),
             self.ref_block_commitment.unwrap_or_default(),
             self.expiration_block_num,

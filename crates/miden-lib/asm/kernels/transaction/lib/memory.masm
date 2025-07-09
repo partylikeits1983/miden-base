@@ -1,5 +1,6 @@
 use.kernel::account
 use.kernel::constants
+use.std::mem
 
 # ERRORS
 # =================================================================================================
@@ -13,6 +14,8 @@ const.ERR_ACCOUNT_STACK_OVERFLOW="depth of the nested FPI calls exceeded 64"
 const.ERR_ACCOUNT_STACK_UNDERFLOW="failed to end foreign context because the current account is the native account"
 
 const.ERR_FOREIGN_ACCOUNT_CONTEXT_AGAINST_NATIVE_ACCOUNT="creation of a foreign context against the native account is forbidden"
+
+const.ERR_LINK_MAP_MAX_ENTRIES_EXCEEDED="number of link map entries exceeds maximum"
 
 # MEMORY ADDRESS CONSTANTS
 # =================================================================================================
@@ -41,7 +44,7 @@ const.NEW_CODE_ROOT_PTR=20
 # The memory address at which the absolute expiration block number is stored.
 const.TX_EXPIRATION_BLOCK_NUM_PTR=24
 
-# The memory address at which the pointer to the account stack element containing the pointer to the 
+# The memory address at which the pointer to the account stack element containing the pointer to the
 # currently accessing account data is stored.
 const.ACCOUNT_STACK_TOP_PTR=28
 
@@ -74,6 +77,9 @@ const.INIT_NONCE_PTR=416
 
 # The memory address at which the transaction script mast root is stored.
 const.TX_SCRIPT_ROOT_PTR=420
+
+# The memory address at which the key of the transaction script arguments is stored.
+const.TX_SCRIPT_ARGS_KEY_PTR=424
 
 # GLOBAL BLOCK DATA
 # -------------------------------------------------------------------------------------------------
@@ -152,8 +158,33 @@ const.ACCT_CODE_COMMITMENT_OFFSET=12
 const.ACCT_CORE_DATA_SECTION_END_OFFSET=16
 const.NUM_ACCT_PROCEDURES_OFFSET=28
 const.ACCT_PROCEDURES_SECTION_OFFSET=32
-const.NUM_ACCT_STORAGE_SLOTS_OFFSET=2084
-const.ACCT_STORAGE_SLOTS_SECTION_OFFSET=2088
+const.ACCT_PROCEDURES_CALL_TRACKING_OFFSET=2084
+const.NUM_ACCT_STORAGE_SLOTS_OFFSET=2340
+const.ACCT_STORAGE_SLOTS_SECTION_OFFSET=2344
+
+# Offset at which an exact copy of the account's storage slot section starting at
+# ACCT_STORAGE_SLOTS_SECTION_OFFSET is kept. This keeps the initial values of the account storage
+# slots accessible to enable computing a diff between the initial and current account storage slots
+# for use in the account delta. This section is only present for the native account.
+const.ACCT_INITIAL_STORAGE_SLOTS_SECTION_OFFSET=4384
+
+# NATIVE ACCOUNT DELTA
+# -------------------------------------------------------------------------------------------------
+
+# The pointer at which the delta of the nonce is stored.
+# Layout: [nonce_delta, 0, 0, 0]
+const.ACCOUNT_DELTA_NONCE_PTR=532480
+
+# The link map pointer at which the delta of the fungible asset vault is stored.
+const.ACCOUNT_DELTA_FUNGIBLE_ASSET_PTR=ACCOUNT_DELTA_NONCE_PTR+4
+
+# The link map pointer at which the delta of the non-fungible asset vault is stored.
+const.ACCOUNT_DELTA_NON_FUNGIBLE_ASSET_PTR=ACCOUNT_DELTA_NONCE_PTR+8
+
+# The section of link map pointers where storage map deltas are stored.
+# This section is offset by `slot index` to get the link map ptr for the storage map
+# delta at that slot index. Slot indices that are not map slots are simply unused.
+const.ACCOUNT_DELTA_STORAGE_MAP_SECTION=ACCOUNT_DELTA_NONCE_PTR+12
 
 # INPUT NOTES DATA
 # -------------------------------------------------------------------------------------------------
@@ -197,6 +228,28 @@ const.OUTPUT_NOTE_ASSETS_HASH_OFFSET=12
 const.OUTPUT_NOTE_NUM_ASSETS_OFFSET=16
 const.OUTPUT_NOTE_ASSETS_OFFSET=20
 
+# LINK MAP MEMORY
+# -------------------------------------------------------------------------------------------------
+
+# The inclusive start of the link map dynamic memory region.
+# Chosen as a number greater than 2^25 such that all entry pointers are multiples of
+# LINK_MAP_ENTRY_SIZE. That enables a simpler check in assert_entry_ptr_is_valid.
+const.LINK_MAP_REGION_START_PTR=33554448
+
+# The non-inclusive end of the link map dynamic memory region.
+# This happens to be 2^26, but if it is changed, it should be chosen as a number such that
+# LINK_MAP_REGION_END_PTR - LINK_MAP_REGION_START_PTR is a multiple of LINK_MAP_ENTRY_SIZE,
+# because that enables checking whether a newly allocated entry pointer is at the end of the range
+# using equality rather than lt/gt in link_map_malloc.
+const.LINK_MAP_REGION_END_PTR=67108864
+
+# LINK_MAP_REGION_START_PTR + the currently used size stored at this pointer defines the next
+# entry pointer that will be allocated.
+const.LINK_MAP_USED_MEMORY_SIZE=33554432
+
+# The size of each map entry, i.e. four words.
+const.LINK_MAP_ENTRY_SIZE=16
+
 # MEMORY PROCEDURES
 # =================================================================================================
 
@@ -211,7 +264,7 @@ const.OUTPUT_NOTE_ASSETS_OFFSET=20
 #! Where:
 #! - num_output_notes is the number of output notes.
 export.get_num_output_notes
-    push.NUM_OUTPUT_NOTES_PTR mem_load
+    mem_load.NUM_OUTPUT_NOTES_PTR
 end
 
 #! Sets the number of output notes.
@@ -222,7 +275,7 @@ end
 #! Where:
 #! - num_output_notes is the number of output notes.
 export.set_num_output_notes
-    push.NUM_OUTPUT_NOTES_PTR mem_store
+    mem_store.NUM_OUTPUT_NOTES_PTR
 end
 
 #! Returns a pointer to the input note being executed.
@@ -233,7 +286,7 @@ end
 #! Where:
 #! - note_ptr is the memory address of the data segment for the current input note.
 export.get_current_input_note_ptr
-    push.CURRENT_INPUT_NOTE_PTR mem_load
+    mem_load.CURRENT_INPUT_NOTE_PTR
 end
 
 #! Sets the current input note pointer to the input note being executed.
@@ -244,7 +297,7 @@ end
 #! Where:
 #! - note_ptr is the new memory address of the data segment for the input note.
 export.set_current_input_note_ptr
-    push.CURRENT_INPUT_NOTE_PTR mem_store
+    mem_store.CURRENT_INPUT_NOTE_PTR
 end
 
 #! Returns a pointer to the memory address at which the input vault root is stored.
@@ -267,7 +320,7 @@ end
 #! Where:
 #! - INPUT_VAULT_ROOT is the input vault root.
 export.get_input_vault_root
-    padw push.INPUT_VAULT_ROOT_PTR mem_loadw
+    padw mem_loadw.INPUT_VAULT_ROOT_PTR
 end
 
 #! Sets the input vault root.
@@ -278,8 +331,7 @@ end
 #! Where:
 #! - INPUT_VAULT_ROOT is the input vault root.
 export.set_input_vault_root
-    push.INPUT_VAULT_ROOT_PTR
-    mem_storew
+    mem_storew.INPUT_VAULT_ROOT_PTR
 end
 
 #! Returns a pointer to the memory address at which the output vault root is stored.
@@ -302,7 +354,7 @@ end
 #! Where:
 #! - OUTPUT_VAULT_ROOT is the output vault root.
 export.get_output_vault_root
-    padw push.OUTPUT_VAULT_ROOT_PTR mem_loadw
+    padw mem_loadw.OUTPUT_VAULT_ROOT_PTR
 end
 
 #! Sets the output vault root.
@@ -313,8 +365,7 @@ end
 #! Where:
 #! - OUTPUT_VAULT_ROOT is the output vault root.
 export.set_output_vault_root
-    push.OUTPUT_VAULT_ROOT_PTR
-    mem_storew
+    mem_storew.OUTPUT_VAULT_ROOT_PTR
 end
 
 # GLOBAL INPUTS
@@ -328,8 +379,7 @@ end
 #! Where:
 #! - BLOCK_COMMITMENT is the commitment of the transaction reference block.
 export.set_block_commitment
-    push.BLOCK_COMMITMENT_PTR
-    mem_storew
+    mem_storew.BLOCK_COMMITMENT_PTR
 end
 
 #! Returns the block commitment of the reference block.
@@ -340,7 +390,7 @@ end
 #! Where:
 #! - BLOCK_COMMITMENT is the commitment of the transaction reference block.
 export.get_block_commitment
-    padw push.BLOCK_COMMITMENT_PTR mem_loadw
+    padw mem_loadw.BLOCK_COMMITMENT_PTR
 end
 
 #! Sets the account ID.
@@ -379,8 +429,7 @@ end
 #! Where:
 #! - INIT_ACCOUNT_COMMITMENT is the initial account commitment.
 export.set_init_account_commitment
-    push.INIT_ACCOUNT_COMMITMENT_PTR
-    mem_storew
+    mem_storew.INIT_ACCOUNT_COMMITMENT_PTR
 end
 
 #! Returns the initial account commitment.
@@ -391,7 +440,7 @@ end
 #! Where:
 #! - INIT_ACCOUNT_COMMITMENT is the initial account commitment.
 export.get_init_account_commitment
-    padw push.INIT_ACCOUNT_COMMITMENT_PTR mem_loadw
+    padw mem_loadw.INIT_ACCOUNT_COMMITMENT_PTR
 end
 
 #! Returns the input notes commitment.
@@ -404,7 +453,7 @@ end
 #! Where:
 #! - INPUT_NOTES_COMMITMENT is the input notes commitment.
 export.get_input_notes_commitment
-    padw push.INPUT_NOTES_COMMITMENT_PTR mem_loadw
+    padw mem_loadw.INPUT_NOTES_COMMITMENT_PTR
 end
 
 #! Sets the input notes' commitment.
@@ -415,8 +464,7 @@ end
 #! Where:
 #! - INPUT_NOTES_COMMITMENT is the notes' commitment.
 export.set_nullifier_commitment
-    push.INPUT_NOTES_COMMITMENT_PTR
-    mem_storew
+    mem_storew.INPUT_NOTES_COMMITMENT_PTR
 end
 
 #! Returns the initial account nonce.
@@ -427,7 +475,7 @@ end
 #! Where:
 #! - init_nonce is the initial account nonce.
 export.get_init_nonce
-    push.INIT_NONCE_PTR mem_load
+    mem_load.INIT_NONCE_PTR
 end
 
 #! Sets the initial account nonce.
@@ -438,7 +486,7 @@ end
 #! Where:
 #! - init_nonce is the initial account nonce.
 export.set_init_nonce
-    push.INIT_NONCE_PTR mem_store
+    mem_store.INIT_NONCE_PTR
 end
 
 #! Returns a memory address of the transaction script root.
@@ -460,8 +508,31 @@ end
 #! Where:
 #! - TX_SCRIPT_ROOT is the transaction script root.
 export.set_tx_script_root
-    push.TX_SCRIPT_ROOT_PTR
-    mem_storew
+    mem_storew.TX_SCRIPT_ROOT_PTR
+end
+
+#! Returns the transaction script arguments key.
+#!
+#! Inputs:  []
+#! Outputs: [TX_SCRIPT_ARGS_KEY]
+#!
+#! Where:
+#! - TX_SCRIPT_ARGS_KEY is the key which could be used to obtain the transaction script arguments 
+#!   from the advice map.
+export.get_tx_script_args_key
+    padw mem_loadw.TX_SCRIPT_ARGS_KEY_PTR
+end
+
+#! Sets the transaction script arguments key.
+#!
+#! Inputs:  [TX_SCRIPT_ARGS_KEY]
+#! Outputs: [TX_SCRIPT_ARGS_KEY]
+#!
+#! Where:
+#! - TX_SCRIPT_ARGS_KEY is the key which could be used to obtain the transaction script arguments 
+#!   from the advice map.
+export.set_tx_script_args_key
+    mem_storew.TX_SCRIPT_ARGS_KEY_PTR
 end
 
 # BLOCK DATA
@@ -486,7 +557,7 @@ end
 #! Where:
 #! - PREV_BLOCK_COMMITMENT_PTR is the block commitment of the transaction reference block.
 export.get_prev_block_commitment
-    padw push.PREV_BLOCK_COMMITMENT_PTR mem_loadw
+    padw mem_loadw.PREV_BLOCK_COMMITMENT_PTR
 end
 
 #! Returns the block number of the transaction reference block.
@@ -497,7 +568,7 @@ end
 #! Where:
 #! - blk_num is the block number of the transaction reference block.
 export.get_blk_num
-    push.BLOCK_METADATA_PTR mem_load
+    mem_load.BLOCK_METADATA_PTR
 end
 
 #! Returns the protocol version of the transaction reference block.
@@ -508,7 +579,7 @@ end
 #! Where:
 #! - version is the protocol version of the transaction reference block.
 export.get_blk_version
-    padw push.BLOCK_METADATA_PTR mem_loadw drop drop swap drop
+    padw mem_loadw.BLOCK_METADATA_PTR drop drop swap drop
 end
 
 #! Returns the block timestamp of the reference block for this transaction.
@@ -519,7 +590,7 @@ end
 #! Where:
 #! - timestamp is the timestamp of the reference block for this transaction.
 export.get_blk_timestamp
-    padw push.BLOCK_METADATA_PTR mem_loadw drop movdn.2 drop drop
+    padw mem_loadw.BLOCK_METADATA_PTR drop movdn.2 drop drop
 end
 
 #! Returns the chain commitment of the transaction reference block.
@@ -530,7 +601,7 @@ end
 #! Where:
 #! - CHAIN_COMMITMENT is the chain commitment of the transaction reference block.
 export.get_chain_commitment
-    padw push.CHAIN_COMMITMENT_PTR mem_loadw
+    padw mem_loadw.CHAIN_COMMITMENT_PTR
 end
 
 #! Returns the account db root of the transaction reference block.
@@ -541,7 +612,7 @@ end
 #! Where:
 #! - ACCT_DB_ROOT is the account database root of the transaction reference block.
 export.get_acct_db_root
-    padw push.ACCT_DB_ROOT_PTR mem_loadw
+    padw mem_loadw.ACCT_DB_ROOT_PTR
 end
 
 #! Returns the nullifier db root of the transaction reference block.
@@ -552,7 +623,7 @@ end
 #! Where:
 #! - NULLIFIER_ROOT is the nullifier root of the transaction reference block.
 export.get_nullifier_db_root
-    padw push.NULLIFIER_ROOT_PTR mem_loadw
+    padw mem_loadw.NULLIFIER_ROOT_PTR
 end
 
 #! Returns the tx commitment of the transaction reference block.
@@ -563,7 +634,7 @@ end
 #! Where:
 #! - TX_COMMITMENT is the tx commitment of the transaction reference block.
 export.get_tx_commitment
-    padw push.TX_COMMITMENT_PTR mem_loadw
+    padw mem_loadw.TX_COMMITMENT_PTR
 end
 
 #! Returns the transaction kernel commitment of the transaction reference block.
@@ -574,7 +645,7 @@ end
 #! Where:
 #! - TX_KERNEL_COMMITMENT is an accumulative hash from all kernel commitments.
 export.get_tx_kernel_commitment
-    padw push.TX_KERNEL_COMMITMENT_PTR mem_loadw
+    padw mem_loadw.TX_KERNEL_COMMITMENT_PTR
 end
 
 #! Returns the proof commitment of the transaction reference block.
@@ -585,7 +656,7 @@ end
 #! Where:
 #! - PROOF_COMMITMENT is the proof commitment of the transaction reference block.
 export.get_proof_commitment
-    padw push.PROOF_COMMITMENT_PTR mem_loadw
+    padw mem_loadw.PROOF_COMMITMENT_PTR
 end
 
 #! Returns the note root of the transaction reference block.
@@ -596,7 +667,7 @@ end
 #! Where:
 #! - NOTE_ROOT is the note root of the transaction reference block.
 export.get_note_root
-    padw push.NOTE_ROOT_PTR mem_loadw
+    padw mem_loadw.NOTE_ROOT_PTR
 end
 
 #! Sets the note root of the transaction reference block.
@@ -607,8 +678,7 @@ end
 #! Where:
 #! - NOTE_ROOT is the note root of the transaction reference block.
 export.set_note_root
-    push.NOTE_ROOT_PTR
-    mem_storew
+    mem_storew.NOTE_ROOT_PTR
 end
 
 # CHAIN DATA
@@ -633,7 +703,7 @@ end
 #! Where:
 #! - num_leaves is the number of leaves in the partial blockchain.
 export.set_partial_blockchain_num_leaves
-    push.PARTIAL_BLOCKCHAIN_NUM_LEAVES_PTR mem_store
+    mem_store.PARTIAL_BLOCKCHAIN_NUM_LEAVES_PTR
 end
 
 #! Returns a pointer to start of the partial blockchain peaks section.
@@ -689,7 +759,7 @@ end
 #! Inputs:  []
 #! Outputs: []
 export.set_current_account_data_ptr_to_native_account
-    # get the pointer to the first stack element where pointer to the native account data should be 
+    # get the pointer to the first stack element where pointer to the native account data should be
     # stored
     push.ACCOUNT_STACK_TOP_PTR
     push.MIN_ACCOUNT_STACK_PTR
@@ -699,7 +769,7 @@ export.set_current_account_data_ptr_to_native_account
     push.NATIVE_ACCOUNT_DATA_PTR dup.1 mem_store
     # => [native_acct_stack_ptr, account_stack_top_ptr]
 
-    # store the pointer to the first account stack element at the account stack top 
+    # store the pointer to the first account stack element at the account stack top
     # pointer.
     swap mem_store
     # => []
@@ -713,7 +783,7 @@ end
 #! Where:
 #! - ptr is the memory address at which the data of the currently used account begins.
 export.get_current_account_data_ptr
-    push.ACCOUNT_STACK_TOP_PTR mem_load
+    mem_load.ACCOUNT_STACK_TOP_PTR
     # => [account_stack_top_ptr]
 
     mem_load
@@ -736,12 +806,12 @@ end
 #! - the provided account data pointer is equal to the native account data pointer.
 export.push_ptr_to_account_stack
     # check that the account stack is not full
-    push.ACCOUNT_STACK_TOP_PTR mem_load dup push.MAX_ACCOUNT_STACK_PTR
+    mem_load.ACCOUNT_STACK_TOP_PTR dup push.MAX_ACCOUNT_STACK_PTR
     lt assert.err=ERR_ACCOUNT_STACK_OVERFLOW
     # => [account_stack_top_ptr, curr_account_data_ptr]
 
     # check that the current account data pointer is not equal to the native account data pointer
-    dup.1 push.NATIVE_ACCOUNT_DATA_PTR eq 
+    dup.1 push.NATIVE_ACCOUNT_DATA_PTR eq
     assertz.err=ERR_FOREIGN_ACCOUNT_CONTEXT_AGAINST_NATIVE_ACCOUNT
     # => [account_stack_top_ptr, curr_account_data_ptr]
 
@@ -764,7 +834,7 @@ end
 export.pop_ptr_from_account_stack
     # check that the account stack always is at least of size 1, that is, it contains at least the
     # native account
-    push.ACCOUNT_STACK_TOP_PTR mem_load dup push.MIN_ACCOUNT_STACK_PTR
+    mem_load.ACCOUNT_STACK_TOP_PTR dup push.MIN_ACCOUNT_STACK_PTR
     gt assert.err=ERR_ACCOUNT_STACK_UNDERFLOW
     # => [account_stack_top_ptr]
 
@@ -783,9 +853,20 @@ end
 #! Panics if:
 #! - the current account data pointer is not equal to native account data pointer (8192).
 export.assert_native_account
+    exec.is_native_account assert.err=ERR_ACCOUNT_IS_NOT_NATIVE
+end
+
+#! Returns 1 if the current account data pointer matches the data pointer of the native account,
+#! 0 otherwise.
+#!
+#! Inputs:  []
+#! Outputs: [is_native_account]
+export.is_native_account
     exec.get_current_account_data_ptr
-    push.NATIVE_ACCOUNT_DATA_PTR
-    assert_eq.err=ERR_ACCOUNT_IS_NOT_NATIVE
+    # => [current_account_data_ptr]
+
+    eq.NATIVE_ACCOUNT_DATA_PTR
+    # => [is_native_account]
 end
 
 #! Returns a pointer to the end of the core account data section.
@@ -947,9 +1028,7 @@ end
 #! Where:
 #! - CODE_COMMITMENT is the new account code commitment.
 export.get_new_acct_code_commitment
-    padw
-    push.NEW_CODE_ROOT_PTR
-    mem_loadw
+    padw mem_loadw.NEW_CODE_ROOT_PTR
 end
 
 #! Stores the new account code commitment in memory.
@@ -960,8 +1039,7 @@ end
 #! Where:
 #! - CODE_COMMITMENT is the new account code commitment.
 export.set_new_acct_code_commitment
-    push.NEW_CODE_ROOT_PTR
-    mem_storew
+    mem_storew.NEW_CODE_ROOT_PTR
 end
 
 #! Sets the transaction expiration block number.
@@ -972,7 +1050,7 @@ end
 #! Where:
 #! - tx_expiration_block_num is the number of the transaction expiration block.
 export.set_expiration_block_num
-    push.TX_EXPIRATION_BLOCK_NUM_PTR mem_store
+    mem_store.TX_EXPIRATION_BLOCK_NUM_PTR
 end
 
 #! Gets the transaction expiration block number.
@@ -983,7 +1061,7 @@ end
 #! Where:
 #! - tx_expiration_block_num is the number of the transaction expiration block.
 export.get_expiration_block_num
-    push.TX_EXPIRATION_BLOCK_NUM_PTR mem_load
+    mem_load.TX_EXPIRATION_BLOCK_NUM_PTR
 end
 
 #! Returns the number of procedures contained in the account code.
@@ -1019,6 +1097,29 @@ end
 #! - account_procedures_section_ptr is the memory pointer to the account procedures section.
 export.get_acct_procedures_section_ptr
     exec.get_current_account_data_ptr push.ACCT_PROCEDURES_SECTION_OFFSET add
+end
+
+#! Returns the memory pointer to the account procedures call tracking section.
+#!
+#! Inputs:  []
+#! Outputs: [procedures_call_tracking_ptr]
+#!
+#! Where:
+#! - procedures_call_tracking_ptr is the memory pointer to the procedure call tracking section.
+export.get_acct_procedures_call_tracking_ptr
+    exec.get_current_account_data_ptr push.ACCT_PROCEDURES_CALL_TRACKING_OFFSET add
+end
+
+#! Returns the memory pointer to a specific account procedure.
+#!
+#! Inputs:  [proc_idx]
+#! Outputs: [proc_ptr]
+#!
+#! Where:
+#! - proc_idx is the index of the account procedure.
+#! - proc_ptr is the memory pointer to the account procedure at the specified index.
+export.get_acct_procedure_ptr
+    mul.8 exec.get_acct_procedures_section_ptr add
 end
 
 ### ACCOUNT STORAGE #################################################
@@ -1072,6 +1173,20 @@ export.set_num_storage_slots
     mem_store
 end
 
+#! Returns the type of the requested storage slot.
+#!
+#! Inputs:  [acct_storage_slots_section_ptr, index]
+#! Outputs: [slot_type]
+#!
+#! Where:
+#! - index is the location in memory of the storage slot.
+#! - slot_type is the type of the storage slot.
+export.get_storage_slot_type
+    # get storage slot type
+    swap mul.8 add add.4 mem_load
+    # => [slot_type]
+end
+
 #! Returns the memory pointer to the account storage slots section.
 #!
 #! Inputs:  []
@@ -1081,6 +1196,106 @@ end
 #! - storage_slots_section_ptr is the memory pointer to the account storage slots section.
 export.get_acct_storage_slots_section_ptr
     exec.get_current_account_data_ptr push.ACCT_STORAGE_SLOTS_SECTION_OFFSET add
+end
+
+#! Returns the memory pointer to the native account's storage slots section.
+#!
+#! Inputs:  []
+#! Outputs: [storage_slots_section_ptr]
+#!
+#! Where:
+#! - storage_slots_section_ptr is the memory pointer to the native account's storage slots section.
+export.get_native_account_storage_slots_ptr
+    exec.get_native_account_data_ptr add.ACCT_STORAGE_SLOTS_SECTION_OFFSET
+end
+
+#! Returns the memory pointer to the initial storage slots of the native account.
+#!
+#! Inputs:  []
+#! Outputs: [account_initial_storage_slots_ptr]
+#!
+#! Where:
+#! - account_initial_storage_slots_ptr is the memory pointer to the initial storage slot values.
+export.get_native_account_initial_storage_slots_ptr
+  exec.get_native_account_data_ptr add.ACCT_INITIAL_STORAGE_SLOTS_SECTION_OFFSET
+end
+
+### ACCOUNT DELTA #################################################
+
+#! Returns the link map pointer to the fungible asset vault delta.
+#!
+#! Inputs:  []
+#! Outputs: [account_delta_fungible_asset_ptr]
+#!
+#! Where:
+#! - account_delta_fungible_asset_ptr is the link map pointer to the fungible asset vault delta.
+export.get_account_delta_fungible_asset_ptr
+  push.ACCOUNT_DELTA_FUNGIBLE_ASSET_PTR
+end
+
+#! Returns the link map pointer to the non-fungible asset vault delta.
+#!
+#! Inputs:  []
+#! Outputs: [account_delta_non_fungible_asset_ptr]
+#!
+#! Where:
+#! - account_delta_non_fungible_asset_ptr is the link map pointer to the non-fungible asset vault delta.
+export.get_account_delta_non_fungible_asset_ptr
+    push.ACCOUNT_DELTA_NON_FUNGIBLE_ASSET_PTR
+end
+
+#! Returns the link map pointer to the storage map delta of the storage map in the given slot index.
+#!
+#! Inputs:  [slot_idx]
+#! Outputs: [account_delta_storage_map_ptr]
+#!
+#! Where:
+#! - account_delta_storage_map_ptr is the link map pointer to the storage map delta for the
+#!   requested slot index.
+export.get_account_delta_storage_map_ptr
+    add.ACCOUNT_DELTA_STORAGE_MAP_SECTION
+end
+
+#! Increments the delta of the account's nonce.
+#!
+#! Example: If this procedure is called with nonce_delta 3 and again with nonce_delta 2,
+#! then the stored nonce_delta will be 5.
+#!
+#! Inputs:  [nonce_delta]
+#! Outputs: []
+#!
+#! Where:
+#! - nonce_delta is the value by which the nonce changed.
+export.incr_account_nonce_delta
+    exec.get_account_nonce_delta add mem_store.ACCOUNT_DELTA_NONCE_PTR
+end
+
+#! Returns the delta of the account's nonce.
+#!
+#! Inputs:  []
+#! Outputs: [nonce_delta]
+#!
+#! Where:
+#! - nonce_delta is the value by which the nonce changed.
+export.get_account_nonce_delta
+    mem_load.ACCOUNT_DELTA_NONCE_PTR
+end
+
+#! Initializes the storage slots holding the initial values of each slot.
+#!
+#! Inputs:  []
+#! Outputs: []
+export.mem_copy_initial_storage_slots
+  exec.get_native_account_initial_storage_slots_ptr
+  exec.get_native_account_storage_slots_ptr
+  # => [storage_slots_section_ptr, initial_storage_slots_ptr]
+
+  # each slot takes up two words
+  exec.get_num_storage_slots mul.2
+  # => [num_storage_slot_words, storage_slots_section_ptr, initial_storage_slots_ptr]
+
+  exec.mem::memcopy_words
+  # => []
 end
 
 # INPUT NOTES
@@ -1094,7 +1309,7 @@ end
 #! Where:
 #! - num_input_notes is the total number of input notes in the transaction.
 export.get_num_input_notes
-    push.NUM_INPUT_NOTES_PTR mem_load
+    mem_load.NUM_INPUT_NOTES_PTR
 end
 
 #! Sets the total number of input notes in the transaction.
@@ -1105,7 +1320,7 @@ end
 #! Where:
 #! - num_input_notes is the total number of input notes in the transaction.
 export.set_num_input_notes
-    push.NUM_INPUT_NOTES_PTR mem_store
+    mem_store.NUM_INPUT_NOTES_PTR
 end
 
 #! Computes a pointer to the memory address at which the data associated with an input note with
@@ -1525,7 +1740,7 @@ end
 #! Where:
 #! - num_kernel_procedures is the number of the procedures of the selected kernel.
 export.set_num_kernel_procedures
-    push.NUM_KERNEL_PROCEDURES_PTR mem_store
+    mem_store.NUM_KERNEL_PROCEDURES_PTR
 end
 
 #! Returns the number of the procedures of the selected kernel.
@@ -1536,7 +1751,7 @@ end
 #! Where:
 #! - num_kernel_procedures is the number of the procedures of the selected kernel.
 export.get_num_kernel_procedures
-    push.NUM_KERNEL_PROCEDURES_PTR mem_load
+    mem_load.NUM_KERNEL_PROCEDURES_PTR
 end
 
 #! Returns a pointer to the memory where hashes of the kernel procedures are stored.
@@ -1549,4 +1764,60 @@ end
 #!   stored.
 export.get_kernel_procedures_ptr
     push.KERNEL_PROCEDURES_PTR
+end
+
+# LINK MAP
+# -------------------------------------------------------------------------------------------------
+
+#! Returns the link map memory start ptr constant.
+#!
+#! Inputs:  []
+#! Outputs: [start_ptr]
+export.get_link_map_region_start_ptr
+    push.LINK_MAP_REGION_START_PTR
+end
+
+#! Returns the link map memory end ptr constant.
+#!
+#! Inputs:  []
+#! Outputs: [end_ptr]
+export.get_link_map_region_end_ptr
+    push.LINK_MAP_REGION_END_PTR
+end
+
+#! Returns the link map entry size constant.
+#!
+#! Inputs:  []
+#! Outputs: [entry_size]
+export.get_link_map_entry_size
+    push.LINK_MAP_ENTRY_SIZE
+end
+
+#! Returns the next pointer to an empty link map entry.
+#!
+#! Inputs:  []
+#! Outputs: [entry_ptr]
+#!
+#! Panics if:
+#! - the allocation exceeds the maximum possible number of link map entries.
+export.link_map_malloc
+    # retrieve the current memory size
+    mem_load.LINK_MAP_USED_MEMORY_SIZE dup
+    # => [current_mem_size, current_mem_size]
+
+    # store next offset
+    add.LINK_MAP_ENTRY_SIZE
+    # => [next_mem_size, current_mem_size]
+
+    mem_store.LINK_MAP_USED_MEMORY_SIZE
+    # => [current_mem_size]
+
+    add.LINK_MAP_REGION_START_PTR
+    # => [entry_ptr]
+
+    # If entry_ptr is the end_ptr the entry would be allocated in the next memory region so
+    # we must abort.
+    # We can use neq because of how the end ptr is chosen. See its docs for details.
+    dup neq.LINK_MAP_REGION_END_PTR assert.err=ERR_LINK_MAP_MAX_ENTRIES_EXCEEDED
+    # => [entry_ptr]
 end

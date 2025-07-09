@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, vec, vec::Vec};
 
-use miden_crypto::rand::RpoRandomCoin;
 use miden_lib::{note::create_p2id_note, transaction::TransactionKernel};
 use miden_objects::{
     Felt,
@@ -8,10 +7,10 @@ use miden_objects::{
     asset::{Asset, FungibleAsset},
     batch::ProvenBatch,
     block::BlockNumber,
+    crypto::rand::RpoRandomCoin,
     note::{Note, NoteId, NoteTag, NoteType},
     testing::{account_component::AccountMockComponent, note::NoteBuilder},
     transaction::{ExecutedTransaction, OutputNote, ProvenTransaction, TransactionScript},
-    utils::word_to_masm_push_string,
 };
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 
@@ -29,7 +28,9 @@ pub fn generate_account(chain: &mut MockChain) -> Account {
         .with_component(
             AccountMockComponent::new_with_empty_slots(TransactionKernel::assembler()).unwrap(),
         );
-    chain.add_pending_account_from_builder(Auth::NoAuth, account_builder, AccountState::Exists)
+    chain
+        .add_pending_account_from_builder(Auth::IncrNonce, account_builder, AccountState::Exists)
+        .expect("failed to add pending account from builder")
 }
 
 pub fn generate_tracked_note(
@@ -63,42 +64,7 @@ pub fn generate_output_note(sender: AccountId, seed: [u8; 32]) -> Note {
     NoteBuilder::new(sender, &mut rng)
         .note_type(NoteType::Private)
         .tag(NoteTag::for_local_use_case(0, 0).unwrap().into())
-        .build(&TransactionKernel::assembler())
-        .unwrap()
-}
-
-pub fn generate_untracked_note_with_output_note(sender: AccountId, output_note: Note) -> Note {
-    // A note script that creates the note that was passed in.
-    let code = format!(
-        "
-    use.test::account
-
-    begin
-        padw padw
-        push.{recipient}
-        push.{execution_hint_always}
-        push.{PUBLIC_NOTE}
-        push.{aux}
-        push.{tag}
-        # => [tag, aux, note_type, execution_hint, RECIPIENT, pad(8)]
-
-        call.account::create_note drop
-        # => [pad(16)]
-
-        dropw dropw dropw dropw dropw
-    end
-    ",
-        recipient = word_to_masm_push_string(&output_note.recipient().digest()),
-        PUBLIC_NOTE = output_note.header().metadata().note_type() as u8,
-        aux = output_note.metadata().aux(),
-        tag = output_note.metadata().tag(),
-        execution_hint_always = Felt::from(output_note.metadata().execution_hint())
-    );
-
-    // Create a note that will create the above output note when consumed.
-    NoteBuilder::new(sender, &mut SmallRng::from_os_rng())
-        .code(code.clone())
-        .build(&TransactionKernel::testing_assembler_with_mock_account())
+        .build(&TransactionKernel::assembler().with_debug_mode(true))
         .unwrap()
 }
 
@@ -129,8 +95,9 @@ pub fn generate_executed_tx_with_authenticated_notes(
 ) -> ExecutedTransaction {
     let tx_context = chain
         .build_tx_context(input, notes, &[])
-        .tx_script(authenticate_mock_account_tx_script(u16::MAX))
-        .build();
+        .expect("failed to build tx context")
+        .build()
+        .unwrap();
     tx_context.execute().unwrap()
 }
 
@@ -146,7 +113,7 @@ pub fn generate_tx_with_authenticated_notes(
 /// Generates a transaction that expires at the given block number.
 pub fn generate_tx_with_expiration(
     chain: &mut MockChain,
-    account_id: AccountId,
+    input: impl Into<TxContextInput>,
     expiration_block: BlockNumber,
 ) -> ProvenTransaction {
     let expiration_delta = expiration_block
@@ -154,9 +121,11 @@ pub fn generate_tx_with_expiration(
         .unwrap();
 
     let tx_context = chain
-        .build_tx_context(account_id, &[], &[])
-        .tx_script(authenticate_mock_account_tx_script(expiration_delta.as_u32() as u16))
-        .build();
+        .build_tx_context(input, &[], &[])
+        .expect("failed to build tx context")
+        .tx_script(update_expiration_tx_script(expiration_delta.as_u32() as u16))
+        .build()
+        .unwrap();
     let executed_tx = tx_context.execute().unwrap();
     ProvenTransaction::from_executed_transaction_mocked(executed_tx)
 }
@@ -168,42 +137,33 @@ pub fn generate_tx_with_unauthenticated_notes(
 ) -> ProvenTransaction {
     let tx_context = chain
         .build_tx_context(account_id, &[], notes)
-        .tx_script(authenticate_mock_account_tx_script(u16::MAX))
-        .build();
+        .expect("failed to build tx context")
+        .build()
+        .unwrap();
     let executed_tx = tx_context.execute().unwrap();
     ProvenTransaction::from_executed_transaction_mocked(executed_tx)
 }
 
-fn authenticate_mock_account_tx_script(expiration_delta: u16) -> TransactionScript {
+fn update_expiration_tx_script(expiration_delta: u16) -> TransactionScript {
     let code = format!(
         "
-        use.test::account
         use.miden::tx
 
         begin
-            padw padw padw
-            push.0.0.0.1
-            # => [1, pad(15)]
-
-            call.account::incr_nonce
-            # => [pad(16)]
-
-            dropw dropw dropw dropw
-
             push.{expiration_delta}
             exec.tx::update_expiration_block_delta
         end
         "
     );
 
-    TransactionScript::compile(code, [], TransactionKernel::testing_assembler_with_mock_account())
+    TransactionScript::compile(code, TransactionKernel::testing_assembler_with_mock_account())
         .unwrap()
 }
 
 pub fn generate_batch(chain: &mut MockChain, txs: Vec<ProvenTransaction>) -> ProvenBatch {
     chain
         .propose_transaction_batch(txs)
-        .map(|batch| chain.prove_transaction_batch(batch))
+        .map(|batch| chain.prove_transaction_batch(batch).unwrap())
         .unwrap()
 }
 
@@ -224,7 +184,7 @@ pub fn setup_chain(num_accounts: usize) -> TestSetup {
         notes.insert(i, note);
     }
 
-    chain.prove_next_block();
+    chain.prove_next_block().expect("failed to prove block");
 
     for i in 0..num_accounts {
         let tx =

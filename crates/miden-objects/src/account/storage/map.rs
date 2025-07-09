@@ -164,8 +164,8 @@ impl StorageMap {
     /// Applies the provided delta to this account storage.
     pub fn apply_delta(&mut self, delta: &StorageMapDelta) -> Digest {
         // apply the updated and cleared leaves to the storage map
-        for (&key, &value) in delta.leaves().iter() {
-            self.insert(key, value);
+        for (&key, &value) in delta.entries().iter() {
+            self.insert(key.into_inner(), value);
         }
 
         self.root()

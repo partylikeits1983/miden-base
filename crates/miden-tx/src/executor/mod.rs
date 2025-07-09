@@ -2,23 +2,23 @@ use alloc::{collections::BTreeSet, sync::Arc, vec::Vec};
 
 use miden_lib::transaction::TransactionKernel;
 use miden_objects::{
-    Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES, ZERO,
+    Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES,
     account::AccountId,
     assembly::SourceManager,
     block::{BlockHeader, BlockNumber},
-    note::NoteId,
+    note::{NoteId, NoteScript},
     transaction::{
         AccountInputs, ExecutedTransaction, InputNote, InputNotes, TransactionArgs,
         TransactionInputs, TransactionScript,
     },
-    vm::StackOutputs,
+    vm::{AdviceMap, StackOutputs},
 };
-pub use vm_processor::MastForestStore;
-use vm_processor::{AdviceInputs, ExecutionOptions, MemAdviceProvider, Process, RecAdviceProvider};
+use vm_processor::{AdviceInputs, MemAdviceProvider, Process, RecAdviceProvider};
+pub use vm_processor::{ExecutionOptions, MastForestStore};
 use winter_maybe_async::{maybe_async, maybe_await};
 
 use super::{TransactionExecutorError, TransactionHost};
-use crate::auth::TransactionAuthenticator;
+use crate::{auth::TransactionAuthenticator, host::ScriptMastForestStore};
 
 mod data_store;
 pub use data_store::DataStore;
@@ -29,7 +29,7 @@ pub use notes_checker::{NoteConsumptionChecker, NoteInputsCheck};
 // TRANSACTION EXECUTOR
 // ================================================================================================
 
-/// The transaction executor is responsible for executing Miden rollup transactions.
+/// The transaction executor is responsible for executing Miden blockchain transactions.
 ///
 /// Transaction execution consists of the following steps:
 /// - Fetch the data required to execute a transaction from the [DataStore].
@@ -38,21 +38,21 @@ pub use notes_checker::{NoteConsumptionChecker, NoteInputsCheck};
 /// The transaction executor uses dynamic dispatch with trait objects for the [DataStore] and
 /// [TransactionAuthenticator], allowing it to be used with different backend implementations.
 /// At the moment of execution, the [DataStore] is expected to provide all required MAST nodes.
-pub struct TransactionExecutor {
-    data_store: Arc<dyn DataStore>,
-    authenticator: Option<Arc<dyn TransactionAuthenticator>>,
+pub struct TransactionExecutor<'store, 'auth> {
+    data_store: &'store dyn DataStore,
+    authenticator: Option<&'auth dyn TransactionAuthenticator>,
     exec_options: ExecutionOptions,
 }
 
-impl TransactionExecutor {
+impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
     // CONSTRUCTOR
     // --------------------------------------------------------------------------------------------
 
     /// Creates a new [TransactionExecutor] instance with the specified [DataStore] and
     /// [TransactionAuthenticator].
     pub fn new(
-        data_store: Arc<dyn DataStore>,
-        authenticator: Option<Arc<dyn TransactionAuthenticator>>,
+        data_store: &'store dyn DataStore,
+        authenticator: Option<&'auth dyn TransactionAuthenticator>,
     ) -> Self {
         const _: () = assert!(MIN_TX_EXECUTION_CYCLES <= MAX_TX_EXECUTION_CYCLES);
 
@@ -67,6 +67,22 @@ impl TransactionExecutor {
             )
             .expect("Must not fail while max cycles is more than min trace length"),
         }
+    }
+
+    /// Creates a new [TransactionExecutor] instance with the specified [DataStore],
+    /// [TransactionAuthenticator] and [ExecutionOptions].
+    ///
+    /// The specified cycle values (`max_cycles` and `expected_cycles`) in the [ExecutionOptions]
+    /// must be within the range [`MIN_TX_EXECUTION_CYCLES`] and [`MAX_TX_EXECUTION_CYCLES`].
+    pub fn with_options(
+        data_store: &'store dyn DataStore,
+        authenticator: Option<&'auth dyn TransactionAuthenticator>,
+        exec_options: ExecutionOptions,
+    ) -> Result<Self, TransactionExecutorError> {
+        validate_num_cycles(exec_options.max_cycles())?;
+        validate_num_cycles(exec_options.expected_cycles())?;
+
+        Ok(Self { data_store, authenticator, exec_options })
     }
 
     /// Puts the [TransactionExecutor] into debug mode.
@@ -138,22 +154,27 @@ impl TransactionExecutor {
             .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
 
         let (stack_inputs, advice_inputs) =
-            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, None)
-                .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
+            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, None);
 
-        let advice_recorder: RecAdviceProvider = advice_inputs.into();
+        let advice_recorder = RecAdviceProvider::from(advice_inputs.into_inner());
+
+        let script_mast_store = ScriptMastForestStore::new(
+            tx_args.tx_script(),
+            tx_inputs.input_notes().iter().map(|n| n.note().script()),
+        );
 
         let mut host = TransactionHost::new(
-            tx_inputs.account().into(),
+            &tx_inputs.account().into(),
             advice_recorder,
-            self.data_store.clone(),
-            self.authenticator.clone(),
+            self.data_store,
+            script_mast_store,
+            self.authenticator,
             tx_args.foreign_account_code_commitments(),
         )
         .map_err(TransactionExecutorError::TransactionHostCreationFailed)?;
 
         // Execute the transaction kernel
-        let result = vm_processor::execute(
+        let trace = vm_processor::execute(
             &TransactionKernel::main(),
             stack_inputs,
             &mut host,
@@ -162,7 +183,7 @@ impl TransactionExecutor {
         )
         .map_err(TransactionExecutorError::TransactionProgramExecutionFailed)?;
 
-        build_executed_transaction(tx_args, tx_inputs, result.stack_outputs().clone(), host)
+        build_executed_transaction(tx_args, tx_inputs, trace.stack_outputs().clone(), host)
     }
 
     // SCRIPT EXECUTION
@@ -197,12 +218,8 @@ impl TransactionExecutor {
         let (account, seed, ref_block, mmr) =
             maybe_await!(self.data_store.get_transaction_inputs(account_id, ref_blocks))
                 .map_err(TransactionExecutorError::FetchTransactionInputsFailed)?;
-        let tx_args = TransactionArgs::new(
-            Some(tx_script.clone()),
-            None,
-            Default::default(),
-            foreign_account_inputs,
-        );
+        let tx_args = TransactionArgs::new(Default::default(), foreign_account_inputs)
+            .with_tx_script(tx_script);
 
         validate_account_inputs(&tx_args, &ref_block)?;
 
@@ -210,15 +227,18 @@ impl TransactionExecutor {
             .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
 
         let (stack_inputs, advice_inputs) =
-            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, Some(advice_inputs))
-                .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
-        let advice_recorder: RecAdviceProvider = advice_inputs.into();
+            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, Some(advice_inputs));
+        let advice_recorder = RecAdviceProvider::from(advice_inputs.into_inner());
+
+        let scripts_mast_store =
+            ScriptMastForestStore::new(tx_args.tx_script(), core::iter::empty::<&NoteScript>());
 
         let mut host = TransactionHost::new(
-            tx_inputs.account().into(),
+            &tx_inputs.account().into(),
             advice_recorder,
-            self.data_store.clone(),
-            self.authenticator.clone(),
+            self.data_store,
+            scripts_mast_store,
+            self.authenticator,
             tx_args.foreign_account_code_commitments(),
         )
         .map_err(TransactionExecutorError::TransactionHostCreationFailed)?;
@@ -277,16 +297,21 @@ impl TransactionExecutor {
             .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
 
         let (stack_inputs, advice_inputs) =
-            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, None)
-                .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
+            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, None);
 
-        let advice_provider: MemAdviceProvider = advice_inputs.into();
+        let advice_provider = MemAdviceProvider::from(advice_inputs.into_inner());
+
+        let scripts_mast_store = ScriptMastForestStore::new(
+            tx_args.tx_script(),
+            tx_inputs.input_notes().iter().map(|n| n.note().script()),
+        );
 
         let mut host = TransactionHost::new(
-            tx_inputs.account().into(),
+            &tx_inputs.account().into(),
             advice_provider,
-            self.data_store.clone(),
-            self.authenticator.clone(),
+            self.data_store,
+            scripts_mast_store,
+            self.authenticator,
             tx_args.foreign_account_code_commitments(),
         )
         .map_err(TransactionExecutorError::TransactionHostCreationFailed)?;
@@ -347,13 +372,21 @@ fn build_executed_transaction(
 
     let (mut advice_witness, _, map, _store) = advice_recorder.finalize();
 
+    let advice_map = AdviceMap::from(map);
     let tx_outputs =
-        TransactionKernel::from_transaction_parts(&stack_outputs, &map.into(), output_notes)
+        TransactionKernel::from_transaction_parts(&stack_outputs, &advice_map, output_notes)
             .map_err(TransactionExecutorError::TransactionOutputConstructionFailed)?;
 
+    let initial_account = tx_inputs.account();
     let final_account = &tx_outputs.account;
 
-    let initial_account = tx_inputs.account();
+    let host_delta_commitment = account_delta.commitment();
+    if tx_outputs.account_delta_commitment != host_delta_commitment {
+        return Err(TransactionExecutorError::InconsistentAccountDeltaCommitment {
+            in_kernel_commitment: tx_outputs.account_delta_commitment,
+            host_commitment: host_delta_commitment,
+        });
+    }
 
     if initial_account.id() != final_account.id() {
         return Err(TransactionExecutorError::InconsistentAccountId {
@@ -364,17 +397,10 @@ fn build_executed_transaction(
 
     // make sure nonce delta was computed correctly
     let nonce_delta = final_account.nonce() - initial_account.nonce();
-    if nonce_delta == ZERO {
-        if account_delta.nonce().is_some() {
-            return Err(TransactionExecutorError::InconsistentAccountNonceDelta {
-                expected: None,
-                actual: account_delta.nonce(),
-            });
-        }
-    } else if final_account.nonce() != account_delta.nonce().unwrap_or_default() {
+    if nonce_delta != account_delta.nonce_delta() {
         return Err(TransactionExecutorError::InconsistentAccountNonceDelta {
-            expected: Some(final_account.nonce()),
-            actual: account_delta.nonce(),
+            expected: nonce_delta,
+            actual: account_delta.nonce_delta(),
         });
     }
 
@@ -433,6 +459,19 @@ fn validate_input_notes(
     }
 
     Ok(ref_blocks)
+}
+
+/// Validates that the number of cycles specified is within the allowed range.
+fn validate_num_cycles(num_cycles: u32) -> Result<(), TransactionExecutorError> {
+    if !(MIN_TX_EXECUTION_CYCLES..=MAX_TX_EXECUTION_CYCLES).contains(&num_cycles) {
+        Err(TransactionExecutorError::InvalidExecutionOptionsCycles {
+            min_cycles: MIN_TX_EXECUTION_CYCLES,
+            max_cycles: MAX_TX_EXECUTION_CYCLES,
+            actual: num_cycles,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 // HELPER ENUM

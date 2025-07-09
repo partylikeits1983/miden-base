@@ -3,17 +3,16 @@ use alloc::vec::Vec;
 use anyhow::Context;
 use assert_matches::assert_matches;
 use miden_block_prover::{LocalBlockProver, ProvenBlockError};
-use miden_crypto::{EMPTY_WORD, Felt, FieldElement};
 use miden_lib::transaction::TransactionKernel;
 use miden_objects::{
-    AccountTreeError, Digest, NullifierTreeError,
+    AccountTreeError, Digest, EMPTY_WORD, Felt, FieldElement, NullifierTreeError,
     account::{
-        Account, AccountBuilder, AccountId, AccountIdAnchor, StorageSlot,
+        Account, AccountBuilder, AccountComponent, AccountId, StorageSlot,
         delta::AccountUpdateDetails,
     },
     batch::ProvenBatch,
     block::{BlockInputs, BlockNumber, ProposedBlock},
-    testing::account_component::AccountMockComponent,
+    testing::account_component::{AccountMockComponent, IncrNonceAuthComponent},
     transaction::{ProvenTransaction, ProvenTransactionBuilder},
     vm::ExecutionProof,
 };
@@ -23,7 +22,7 @@ use super::utils::{
     TestSetup, generate_batch, generate_executed_tx_with_authenticated_notes,
     generate_tracked_note, setup_chain,
 };
-use crate::{MockChain, ProvenTransactionExt, TransactionContextBuilder};
+use crate::{Auth, MockChain, ProvenTransactionExt, TransactionContextBuilder};
 
 struct WitnessTestSetup {
     stale_block_inputs: BlockInputs,
@@ -37,29 +36,29 @@ struct WitnessTestSetup {
 fn witness_test_setup() -> WitnessTestSetup {
     let TestSetup { mut chain, mut accounts, mut txs, .. } = setup_chain(4);
 
-    let account0 = accounts.remove(&0).unwrap();
-    let account1 = accounts.remove(&1).unwrap();
+    let account0 = accounts.remove(&0).context("failed to remove account 0").unwrap();
+    let account1 = accounts.remove(&1).context("failed to remove account 1").unwrap();
 
     let note = generate_tracked_note(&mut chain, account1.id(), account0.id());
     // Add note to chain.
-    chain.prove_next_block();
+    chain.prove_next_block().unwrap();
 
     let tx0 = generate_executed_tx_with_authenticated_notes(&chain, account0.id(), &[note.id()]);
-    let tx1 = txs.remove(&1).unwrap();
-    let tx2 = txs.remove(&2).unwrap();
+    let tx1 = txs.remove(&1).context("failed to remove tx 1").unwrap();
+    let tx2 = txs.remove(&2).context("failed to remove tx 2").unwrap();
 
     let batch1 = generate_batch(&mut chain, vec![tx1, tx2]);
     let batches = vec![batch1];
-    let stale_block_inputs = chain.get_block_inputs(&batches);
+    let stale_block_inputs = chain.get_block_inputs(&batches).unwrap();
 
     let account_root0 = chain.account_tree().root();
     let nullifier_root0 = chain.nullifier_tree().root();
 
     // Apply the executed tx and seal a block. This invalidates the block inputs we've just fetched.
-    chain.add_pending_executed_transaction(&tx0);
-    chain.prove_next_block();
+    chain.add_pending_executed_transaction(&tx0).unwrap();
+    chain.prove_next_block().unwrap();
 
-    let valid_block_inputs = chain.get_block_inputs(&batches);
+    let valid_block_inputs = chain.get_block_inputs(&batches).unwrap();
 
     // Sanity check: This test requires that the tree roots change with the last sealed block so the
     // previously fetched block inputs become invalid.
@@ -91,10 +90,8 @@ fn proven_block_fails_on_stale_account_witnesses() -> anyhow::Result<()> {
 
     // Make the block inputs invalid by using the stale account witnesses.
     let mut invalid_account_tree_block_inputs = valid_block_inputs.clone();
-    core::mem::swap(
-        invalid_account_tree_block_inputs.account_witnesses_mut(),
-        &mut stale_block_inputs.account_witnesses().clone(),
-    );
+    *invalid_account_tree_block_inputs.account_witnesses_mut() =
+        stale_block_inputs.account_witnesses().clone();
 
     let proposed_block0 = ProposedBlock::new(invalid_account_tree_block_inputs, batches.clone())
         .context("failed to propose block 0")?;
@@ -132,10 +129,8 @@ fn proven_block_fails_on_stale_nullifier_witnesses() -> anyhow::Result<()> {
 
     // Make the block inputs invalid by using the stale nullifier witnesses.
     let mut invalid_nullifier_tree_block_inputs = valid_block_inputs.clone();
-    core::mem::swap(
-        invalid_nullifier_tree_block_inputs.nullifier_witnesses_mut(),
-        &mut stale_block_inputs.nullifier_witnesses().clone(),
-    );
+    *invalid_nullifier_tree_block_inputs.nullifier_witnesses_mut() =
+        stale_block_inputs.nullifier_witnesses().clone();
 
     let proposed_block2 = ProposedBlock::new(invalid_nullifier_tree_block_inputs, batches.clone())
         .context("failed to propose block 2")?;
@@ -173,18 +168,17 @@ fn proven_block_fails_on_account_tree_root_mismatch() -> anyhow::Result<()> {
 
     // Make the block inputs invalid by using a single stale account witness.
     let mut stale_account_witness_block_inputs = valid_block_inputs.clone();
-    let batch_account_id0 = batches[0].updated_accounts().next().unwrap();
-    core::mem::swap(
-        stale_account_witness_block_inputs
-            .account_witnesses_mut()
-            .get_mut(&batch_account_id0)
-            .unwrap(),
-        &mut stale_block_inputs
-            .account_witnesses_mut()
-            .get_mut(&batch_account_id0)
-            .unwrap()
-            .clone(),
-    );
+    let batch_account_id0 =
+        batches[0].updated_accounts().next().context("failed to get updated account")?;
+
+    *stale_account_witness_block_inputs
+        .account_witnesses_mut()
+        .get_mut(&batch_account_id0)
+        .context("failed to get account witness")? = stale_block_inputs
+        .account_witnesses_mut()
+        .get_mut(&batch_account_id0)
+        .context("failed to get stale account witness")?
+        .clone();
 
     let proposed_block1 = ProposedBlock::new(stale_account_witness_block_inputs, batches.clone())
         .context("failed to propose block 1")?;
@@ -222,18 +216,19 @@ fn proven_block_fails_on_nullifier_tree_root_mismatch() -> anyhow::Result<()> {
 
     // Make the block inputs invalid by using a single stale nullifier witnesses.
     let mut invalid_nullifier_witness_block_inputs = valid_block_inputs.clone();
-    let batch_nullifier0 = batches[0].created_nullifiers().next().unwrap();
-    core::mem::swap(
-        invalid_nullifier_witness_block_inputs
-            .nullifier_witnesses_mut()
-            .get_mut(&batch_nullifier0)
-            .unwrap(),
-        &mut stale_block_inputs
-            .nullifier_witnesses_mut()
-            .get_mut(&batch_nullifier0)
-            .unwrap()
-            .clone(),
-    );
+    let batch_nullifier0 = batches[0]
+        .created_nullifiers()
+        .next()
+        .context("failed to get created nullifier")?;
+
+    *invalid_nullifier_witness_block_inputs
+        .nullifier_witnesses_mut()
+        .get_mut(&batch_nullifier0)
+        .context("failed to get nullifier witness")? = stale_block_inputs
+        .nullifier_witnesses_mut()
+        .get_mut(&batch_nullifier0)
+        .context("failed to get stale nullifier witness")?
+        .clone();
 
     let proposed_block3 = ProposedBlock::new(invalid_nullifier_witness_block_inputs, batches)
         .context("failed to propose block 3")?;
@@ -258,15 +253,19 @@ fn proven_block_fails_on_creating_account_with_existing_account_id_prefix() -> a
     // --------------------------------------------------------------------------------------------
 
     let mut mock_chain = MockChain::new();
-    let anchor_block = mock_chain.block_header(0);
+
+    let assembler = TransactionKernel::testing_assembler();
+    let auth_component: AccountComponent =
+        IncrNonceAuthComponent::new(assembler.clone()).unwrap().into();
+
     let (account, seed) = AccountBuilder::new([5; 32])
-        .anchor(AccountIdAnchor::try_from(&anchor_block)?)
+        .with_auth_component(auth_component.clone())
         .with_component(
             AccountMockComponent::new_with_slots(
                 TransactionKernel::testing_assembler(),
                 vec![StorageSlot::Value([5u32.into(); 4])],
             )
-            .unwrap(),
+            .context("failed to create account mock component")?,
         )
         .build()
         .context("failed to build account")?;
@@ -295,26 +294,30 @@ fn proven_block_fails_on_creating_account_with_existing_account_id_prefix() -> a
     );
     assert_eq!(account.init_commitment(), miden_objects::Digest::from(EMPTY_WORD));
 
-    let existing_account =
-        Account::mock(existing_id.into(), Felt::ZERO, TransactionKernel::testing_assembler());
+    let existing_account = Account::mock(
+        existing_id.into(),
+        Felt::ZERO,
+        auth_component,
+        TransactionKernel::testing_assembler(),
+    );
     mock_chain.add_pending_account(existing_account.clone());
-    mock_chain.prove_next_block();
+    mock_chain.prove_next_block()?;
 
     // Execute the account-creating transaction.
     // --------------------------------------------------------------------------------------------
 
-    let tx_inputs = mock_chain.get_transaction_inputs(account.clone(), Some(seed), &[], &[]);
+    let tx_inputs = mock_chain.get_transaction_inputs(account.clone(), Some(seed), &[], &[])?;
     let tx_context = TransactionContextBuilder::new(account)
         .account_seed(Some(seed))
         .tx_inputs(tx_inputs)
-        .build();
+        .build()?;
     let tx = tx_context.execute().context("failed to execute account creating tx")?;
     let tx = ProvenTransaction::from_executed_transaction_mocked(tx);
 
     let batch = generate_batch(&mut mock_chain, vec![tx]);
     let batches = [batch];
 
-    let block_inputs = mock_chain.get_block_inputs(batches.iter());
+    let block_inputs = mock_chain.get_block_inputs(batches.iter())?;
     // Sanity check: The mock chain account tree root should match the previous block header's
     // account tree root.
     assert_eq!(
@@ -356,17 +359,15 @@ fn proven_block_fails_on_creating_account_with_existing_account_id_prefix() -> a
 fn proven_block_fails_on_creating_account_with_duplicate_account_id_prefix() -> anyhow::Result<()> {
     // Construct a new account.
     // --------------------------------------------------------------------------------------------
-
     let mut mock_chain = MockChain::new();
-    let anchor_block = mock_chain.block_header(0);
     let (account, _) = AccountBuilder::new([5; 32])
-        .anchor(AccountIdAnchor::try_from(&anchor_block)?)
+        .with_auth_component(Auth::IncrNonce)
         .with_component(
             AccountMockComponent::new_with_slots(
                 TransactionKernel::testing_assembler(),
                 vec![StorageSlot::Value([5u32.into(); 4])],
             )
-            .unwrap(),
+            .context("failed to create account mock component")?,
         )
         .build()
         .context("failed to build account")?;
@@ -392,19 +393,23 @@ fn proven_block_fails_on_creating_account_with_duplicate_account_id_prefix() -> 
     // same ID prefix but not the suffix.
     // --------------------------------------------------------------------------------------------
 
+    let genesis_block = mock_chain.block_header(0);
+
     let [tx0, tx1] =
         [(id0, [0, 0, 0, 1u32]), (id1, [0, 0, 0, 2u32])].map(|(id, final_state_comm)| {
             ProvenTransactionBuilder::new(
                 id,
                 Digest::default(),
                 Digest::from(final_state_comm),
-                anchor_block.block_num(),
-                anchor_block.commitment(),
+                Digest::default(),
+                genesis_block.block_num(),
+                genesis_block.commitment(),
                 BlockNumber::from(u32::MAX),
                 ExecutionProof::new(Proof::new_dummy(), Default::default()),
             )
             .account_update_details(AccountUpdateDetails::Private)
             .build()
+            .context("failed to build proven transaction")
             .unwrap()
         });
 
@@ -416,7 +421,7 @@ fn proven_block_fails_on_creating_account_with_duplicate_account_id_prefix() -> 
 
     // Sanity check: The block inputs should contain two account witnesses that point to the same
     // empty entry.
-    let block_inputs = mock_chain.get_block_inputs(batches.iter());
+    let block_inputs = mock_chain.get_block_inputs(batches.iter())?;
     assert_eq!(block_inputs.account_witnesses().len(), 2);
     let witness0 = block_inputs
         .account_witnesses()

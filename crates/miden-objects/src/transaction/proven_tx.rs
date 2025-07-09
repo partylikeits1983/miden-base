@@ -2,7 +2,7 @@ use alloc::{string::ToString, vec::Vec};
 
 use super::{InputNote, ToInputNoteCommitments};
 use crate::{
-    ACCOUNT_UPDATE_MAX_SIZE, ProvenTransactionError,
+    ACCOUNT_UPDATE_MAX_SIZE, EMPTY_WORD, ProvenTransactionError,
     account::delta::AccountUpdateDetails,
     block::BlockNumber,
     note::NoteHeader,
@@ -18,6 +18,13 @@ use crate::{
 
 /// Result of executing and proving a transaction. Contains all the data required to verify that a
 /// transaction was executed correctly.
+///
+/// A proven transaction must not be empty. A transaction is empty if the account state is unchanged
+/// or the number of input notes is zero. This check prevents proving a transaction once and
+/// submitting it to the network many times. Output notes are not considered because they can be
+/// empty (i.e. contain no assets). Otherwise, a transaction with no account state change, no input
+/// notes and one such empty output note could be resubmitted many times to the network and fill up
+/// block space which is a form of DOS attack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvenTransaction {
     /// A unique identifier for the transaction, see [TransactionId] for additional details.
@@ -113,6 +120,8 @@ impl ProvenTransaction {
     ///
     /// Returns an error if:
     /// - The size of the serialized account update exceeds [`ACCOUNT_UPDATE_MAX_SIZE`].
+    /// - The transaction is empty, which is the case if the account state is unchanged or the
+    ///   number of input notes is zero.
     /// - The transaction was executed against a _new_ on-chain account and its account ID does not
     ///   match the ID in the account update.
     /// - The transaction was executed against a _new_ on-chain account and its commitment does not
@@ -129,6 +138,15 @@ impl ProvenTransaction {
         // If the account is on-chain, then the account update details must be present.
         if self.account_id().is_onchain() {
             self.account_update.validate()?;
+
+            // check that either the account state was changed or at least one note was consumed,
+            // otherwise this transaction is empty
+            if self.account_update.initial_state_commitment()
+                == self.account_update.final_state_commitment()
+                && *self.input_notes.commitment() == EMPTY_WORD
+            {
+                return Err(ProvenTransactionError::EmptyTransaction);
+            }
 
             let is_new_account =
                 self.account_update.initial_state_commitment() == Digest::default();
@@ -238,6 +256,9 @@ pub struct ProvenTransactionBuilder {
     /// The commitment of the account after the transaction was executed.
     final_account_commitment: Digest,
 
+    /// The commitment of the account delta produced by the transaction.
+    account_delta_commitment: Digest,
+
     /// State changes to the account due to the transaction.
     account_update_details: AccountUpdateDetails,
 
@@ -269,6 +290,7 @@ impl ProvenTransactionBuilder {
         account_id: AccountId,
         initial_account_commitment: Digest,
         final_account_commitment: Digest,
+        account_delta_commitment: Digest,
         ref_block_num: BlockNumber,
         ref_block_commitment: Digest,
         expiration_block_num: BlockNumber,
@@ -278,6 +300,7 @@ impl ProvenTransactionBuilder {
             account_id,
             initial_account_commitment,
             final_account_commitment,
+            account_delta_commitment,
             account_update_details: AccountUpdateDetails::Private,
             input_notes: Vec::new(),
             output_notes: Vec::new(),
@@ -328,6 +351,8 @@ impl ProvenTransactionBuilder {
     ///   [`MAX_OUTPUT_NOTES_PER_TX`](crate::constants::MAX_OUTPUT_NOTES_PER_TX).
     /// - The vector of output notes contains duplicates.
     /// - The size of the serialized account update exceeds [`ACCOUNT_UPDATE_MAX_SIZE`].
+    /// - The transaction is empty, which is the case if the account state is unchanged or the
+    ///   number of input notes is zero.
     /// - The transaction was executed against a _new_ on-chain account and its account ID does not
     ///   match the ID in the account update.
     /// - The transaction was executed against a _new_ on-chain account and its commitment does not
@@ -355,6 +380,7 @@ impl ProvenTransactionBuilder {
             self.account_id,
             self.initial_account_commitment,
             self.final_account_commitment,
+            self.account_delta_commitment,
             self.account_update_details,
         );
 
@@ -382,13 +408,16 @@ pub struct TxAccountUpdate {
     /// ID of the account updated by a transaction.
     account_id: AccountId,
 
-    /// The commitment of the account before a transaction was executed.
+    /// The commitment of the account before the transaction was executed.
     ///
     /// Set to `Digest::default()` for new accounts.
     init_state_commitment: Digest,
 
-    /// The commitment of the account state after a transaction was executed.
+    /// The commitment of the account state after the transaction was executed.
     final_state_commitment: Digest,
+
+    /// The commitment to the account delta resulting from the execution of the transaction.
+    account_delta_commitment: Digest,
 
     /// A set of changes which can be applied the account's state prior to the transaction to
     /// get the account state after the transaction. For private accounts this is set to
@@ -402,12 +431,14 @@ impl TxAccountUpdate {
         account_id: AccountId,
         init_state_commitment: Digest,
         final_state_commitment: Digest,
+        account_delta_commitment: Digest,
         details: AccountUpdateDetails,
     ) -> Self {
         Self {
             account_id,
             init_state_commitment,
             final_state_commitment,
+            account_delta_commitment,
             details,
         }
     }
@@ -417,14 +448,19 @@ impl TxAccountUpdate {
         self.account_id
     }
 
-    /// Returns the commitment of the account's initial state.
+    /// Returns the commitment of the account before the transaction was executed.
     pub fn initial_state_commitment(&self) -> Digest {
         self.init_state_commitment
     }
 
-    /// Returns the commitment of the account's after a transaction was executed.
+    /// Returns the commitment of the account after the transaction was executed.
     pub fn final_state_commitment(&self) -> Digest {
         self.final_state_commitment
+    }
+
+    /// Returns the commitment to the account delta resulting from the execution of the transaction.
+    pub fn account_delta_commitment(&self) -> Digest {
+        self.account_delta_commitment
     }
 
     /// Returns the description of the updates for public accounts.
@@ -461,6 +497,7 @@ impl Serializable for TxAccountUpdate {
         self.account_id.write_into(target);
         self.init_state_commitment.write_into(target);
         self.final_state_commitment.write_into(target);
+        self.account_delta_commitment.write_into(target);
         self.details.write_into(target);
     }
 }
@@ -471,6 +508,7 @@ impl Deserializable for TxAccountUpdate {
             account_id: AccountId::read_from(source)?,
             init_state_commitment: Digest::read_from(source)?,
             final_state_commitment: Digest::read_from(source)?,
+            account_delta_commitment: Digest::read_from(source)?,
             details: AccountUpdateDetails::read_from(source)?,
         })
     }
@@ -588,10 +626,13 @@ mod tests {
         ACCOUNT_UPDATE_MAX_SIZE, Digest, EMPTY_WORD, ONE, ProvenTransactionError, ZERO,
         account::{
             AccountDelta, AccountId, AccountIdVersion, AccountStorageDelta, AccountStorageMode,
-            AccountType, AccountVaultDelta, StorageMapDelta, delta::AccountUpdateDetails,
+            AccountType, AccountVaultDelta, StorageMapDelta,
+            delta::{AccountUpdateDetails, LexicographicWord},
         },
         block::BlockNumber,
-        testing::account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+        testing::account_id::{
+            ACCOUNT_ID_PRIVATE_SENDER, ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+        },
         transaction::{ProvenTransactionBuilder, TxAccountUpdate},
         utils::Serializable,
     };
@@ -616,16 +657,18 @@ mod tests {
     #[test]
     fn account_update_size_limit_not_exceeded() {
         // A small delta does not exceed the limit.
+        let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
         let storage_delta = AccountStorageDelta::from_iters(
             [1, 2, 3, 4],
             [(2, [ONE, ONE, ONE, ONE]), (3, [ONE, ONE, ZERO, ONE])],
             [],
         );
-        let delta =
-            AccountDelta::new(storage_delta, AccountVaultDelta::default(), Some(ONE)).unwrap();
+        let delta = AccountDelta::new(account_id, storage_delta, AccountVaultDelta::default(), ONE)
+            .unwrap();
         let details = AccountUpdateDetails::Delta(delta);
         TxAccountUpdate::new(
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap(),
+            Digest::new(EMPTY_WORD),
             Digest::new(EMPTY_WORD),
             Digest::new(EMPTY_WORD),
             details,
@@ -636,25 +679,27 @@ mod tests {
 
     #[test]
     fn account_update_size_limit_exceeded() {
+        let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
         let mut map = BTreeMap::new();
         // The number of entries in the map required to exceed the limit.
         // We divide by each entry's size which consists of a key (digest) and a value (word), both
         // 32 bytes in size.
         let required_entries = ACCOUNT_UPDATE_MAX_SIZE / (2 * 32);
         for _ in 0..required_entries {
-            map.insert(Digest::new(rand_array()), rand_array());
+            map.insert(LexicographicWord::new(Digest::new(rand_array())), rand_array());
         }
         let storage_delta = StorageMapDelta::new(map);
 
         // A delta that exceeds the limit returns an error.
         let storage_delta = AccountStorageDelta::from_iters([], [], [(4, storage_delta)]);
-        let delta =
-            AccountDelta::new(storage_delta, AccountVaultDelta::default(), Some(ONE)).unwrap();
+        let delta = AccountDelta::new(account_id, storage_delta, AccountVaultDelta::default(), ONE)
+            .unwrap();
         let details = AccountUpdateDetails::Delta(delta);
         let details_size = details.get_size_hint();
 
         let err = TxAccountUpdate::new(
             AccountId::try_from(ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE).unwrap(),
+            Digest::new(EMPTY_WORD),
             Digest::new(EMPTY_WORD),
             Digest::new(EMPTY_WORD),
             details,
@@ -679,6 +724,8 @@ mod tests {
             [2; 32].try_into().expect("failed to create initial account commitment");
         let final_account_commitment =
             [3; 32].try_into().expect("failed to create final account commitment");
+        let account_delta_commitment =
+            [4; 32].try_into().expect("failed to create account delta commitment");
         let ref_block_num = BlockNumber::from(1);
         let ref_block_commitment = Digest::default();
         let expiration_block_num = BlockNumber::from(2);
@@ -688,6 +735,7 @@ mod tests {
             account_id,
             initial_account_commitment,
             final_account_commitment,
+            account_delta_commitment,
             ref_block_num,
             ref_block_commitment,
             expiration_block_num,

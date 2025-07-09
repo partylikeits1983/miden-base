@@ -54,7 +54,7 @@ const.EPILOGUE_END=131097
 #!   INPUT_NOTES_COMMITMENT,
 #!   account_id_prefix, account_id_suffix, block_num,
 #! ]
-#! Outputs: [OUTPUT_NOTES_COMMITMENT, FINAL_ACCOUNT_COMMITMENT, tx_expiration_block_num]
+#! Outputs: [OUTPUT_NOTES_COMMITMENT, ACCOUNT_UPDATE_COMMITMENT, tx_expiration_block_num]
 #!
 #! Where:
 #! - BLOCK_COMMITMENT is the reference block for the transaction execution.
@@ -63,7 +63,8 @@ const.EPILOGUE_END=131097
 #! - INITIAL_ACCOUNT_COMMITMENT is the account state prior to the transaction, EMPTY_WORD for new accounts.
 #! - INPUT_NOTES_COMMITMENT, see `transaction::api::get_input_notes_commitment`.
 #! - OUTPUT_NOTES_COMMITMENT is the commitment to the notes created by the transaction.
-#! - FINAL_ACCOUNT_COMMITMENT is the account's hash after execution the transaction.
+#! - ACCOUNT_UPDATE_COMMITMENT is the hash of the the final account commitment and account
+#!   delta commitment.
 proc.main.1
     # Prologue
     # ---------------------------------------------------------------------------------------------
@@ -134,6 +135,10 @@ proc.main.1
     # => [has_tx_script, tx_script_root_ptr]
 
     if.true
+        # load the transaction script arguments onto the stack
+        exec.memory::get_tx_script_args_key movup.4
+        # => [tx_script_root_ptr, TX_SCRIPT_ARGS_KEY]
+
         # execute the transaction script
         dyncall
         # => [OUTPUT_3, OUTPUT_2, OUTPUT_1, OUTPUT_0]
@@ -156,13 +161,13 @@ proc.main.1
 
     # execute the transaction epilogue
     exec.epilogue::finalize_transaction
-    # => [OUTPUT_NOTES_COMMITMENT, FINAL_ACCOUNT_COMMITMENT, tx_expiration_block_num]
+    # => [OUTPUT_NOTES_COMMITMENT, ACCOUNT_UPDATE_COMMITMENT, tx_expiration_block_num]
 
     # truncate the stack
     movupw.3 dropw movupw.3 dropw movup.9 drop
 
     emit.EPILOGUE_END
-    # => [OUTPUT_NOTES_COMMITMENT, FINAL_ACCOUNT_COMMITMENT, tx_expiration_block_num]
+    # => [OUTPUT_NOTES_COMMITMENT, ACCOUNT_UPDATE_COMMITMENT, tx_expiration_block_num]
 end
 
 begin

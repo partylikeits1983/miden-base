@@ -10,18 +10,18 @@ use crate::errors::MasmError;
 // TX KERNEL ERRORS
 // ================================================================================================
 
-/// Error Message: "anchor block commitment must not be empty"
-pub const ERR_ACCOUNT_ANCHOR_BLOCK_COMMITMENT_MUST_NOT_BE_EMPTY: MasmError = MasmError::from_static_str("anchor block commitment must not be empty");
 /// Error Message: "computed account code commitment does not match recorded account code commitment"
 pub const ERR_ACCOUNT_CODE_COMMITMENT_MISMATCH: MasmError = MasmError::from_static_str("computed account code commitment does not match recorded account code commitment");
 /// Error Message: "account code must be updatable for it to be possible to set new code"
 pub const ERR_ACCOUNT_CODE_IS_NOT_UPDATABLE: MasmError = MasmError::from_static_str("account code must be updatable for it to be possible to set new code");
-/// Error Message: "epoch must be less than u16::MAX (0xffff)"
-pub const ERR_ACCOUNT_ID_EPOCH_MUST_BE_LESS_THAN_U16_MAX: MasmError = MasmError::from_static_str("epoch must be less than u16::MAX (0xffff)");
-/// Error Message: "least significant byte of the account ID suffix must be zero"
-pub const ERR_ACCOUNT_ID_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO: MasmError = MasmError::from_static_str("least significant byte of the account ID suffix must be zero");
+/// Error Message: "account delta nonce must incremented if vault or storage changed"
+pub const ERR_ACCOUNT_DELTA_NONCE_MUST_BE_INCREMENTED_WITH_VAULT_OR_STORAGE_CHANGES: MasmError = MasmError::from_static_str("account delta nonce must incremented if vault or storage changed");
 /// Error Message: "the account ID must have storage mode public if the network flag is set"
 pub const ERR_ACCOUNT_ID_NON_PUBLIC_NETWORK_ACCOUNT: MasmError = MasmError::from_static_str("the account ID must have storage mode public if the network flag is set");
+/// Error Message: "least significant byte of the account ID suffix must be zero"
+pub const ERR_ACCOUNT_ID_SUFFIX_LEAST_SIGNIFICANT_BYTE_MUST_BE_ZERO: MasmError = MasmError::from_static_str("least significant byte of the account ID suffix must be zero");
+/// Error Message: "most significant bit of the account ID suffix must be zero"
+pub const ERR_ACCOUNT_ID_SUFFIX_MOST_SIGNIFICANT_BIT_MUST_BE_ZERO: MasmError = MasmError::from_static_str("most significant bit of the account ID suffix must be zero");
 /// Error Message: "unknown account storage mode in account ID"
 pub const ERR_ACCOUNT_ID_UNKNOWN_STORAGE_MODE: MasmError = MasmError::from_static_str("unknown account storage mode in account ID");
 /// Error Message: "unknown version in account ID"
@@ -36,12 +36,14 @@ pub const ERR_ACCOUNT_NONCE_DID_NOT_INCREASE_AFTER_STATE_CHANGE: MasmError = Mas
 pub const ERR_ACCOUNT_NONCE_INCREASE_MUST_BE_U32: MasmError = MasmError::from_static_str("account nonce cannot be increased by a greater than u32 value");
 /// Error Message: "provided procedure index is out of bounds"
 pub const ERR_ACCOUNT_PROC_INDEX_OUT_OF_BOUNDS: MasmError = MasmError::from_static_str("provided procedure index is out of bounds");
+/// Error Message: "account procedure is not the authentication procedure"
+pub const ERR_ACCOUNT_PROC_NOT_AUTH_PROC: MasmError = MasmError::from_static_str("account procedure is not the authentication procedure");
 /// Error Message: "account procedure is not part of the account code"
 pub const ERR_ACCOUNT_PROC_NOT_PART_OF_ACCOUNT_CODE: MasmError = MasmError::from_static_str("account procedure is not part of the account code");
 /// Error Message: "failed to read an account map item from a non-map storage slot"
 pub const ERR_ACCOUNT_READING_MAP_VALUE_FROM_NON_MAP_SLOT: MasmError = MasmError::from_static_str("failed to read an account map item from a non-map storage slot");
-/// Error Message: "ID of the new account does not match the ID computed from the seed and anchor block commitment"
-pub const ERR_ACCOUNT_SEED_ANCHOR_BLOCK_COMMITMENT_DIGEST_MISMATCH: MasmError = MasmError::from_static_str("ID of the new account does not match the ID computed from the seed and anchor block commitment");
+/// Error Message: "ID of the new account does not match the ID computed from the seed and commitments"
+pub const ERR_ACCOUNT_SEED_AND_COMMITMENT_DIGEST_MISMATCH: MasmError = MasmError::from_static_str("ID of the new account does not match the ID computed from the seed and commitments");
 /// Error Message: "failed to write an account map item to a non-map storage slot"
 pub const ERR_ACCOUNT_SETTING_MAP_ITEM_ON_NON_MAP_SLOT: MasmError = MasmError::from_static_str("failed to write an account map item to a non-map storage slot");
 /// Error Message: "failed to write an account value item to a non-value storage slot"
@@ -59,6 +61,8 @@ pub const ERR_ACCOUNT_TOO_MANY_PROCEDURES: MasmError = MasmError::from_static_st
 /// Error Message: "number of account storage slots exceeds the maximum limit of 255"
 pub const ERR_ACCOUNT_TOO_MANY_STORAGE_SLOTS: MasmError = MasmError::from_static_str("number of account storage slots exceeds the maximum limit of 255");
 
+/// Error Message: "executed transaction neither changed the account state, nor consumed any notes"
+pub const ERR_EPILOGUE_EXECUTED_TRANSACTION_IS_EMPTY: MasmError = MasmError::from_static_str("executed transaction neither changed the account state, nor consumed any notes");
 /// Error Message: "total number of assets in the account and all involved notes must stay the same"
 pub const ERR_EPILOGUE_TOTAL_NUMBER_OF_ASSETS_MUST_STAY_THE_SAME: MasmError = MasmError::from_static_str("total number of assets in the account and all involved notes must stay the same");
 
@@ -107,6 +111,23 @@ pub const ERR_FUNGIBLE_ASSET_PROVIDED_FAUCET_ID_IS_INVALID: MasmError = MasmErro
 
 /// Error Message: "provided kernel procedure offset is out of bounds"
 pub const ERR_KERNEL_PROCEDURE_OFFSET_OUT_OF_BOUNDS: MasmError = MasmError::from_static_str("provided kernel procedure offset is out of bounds");
+
+/// Error Message: "map cannot be empty when proving absence after an entry"
+pub const ERR_LINK_MAP_CANNOT_BE_EMPTY_ON_ABSENCE_AFTER_ENTRY: MasmError = MasmError::from_static_str("map cannot be empty when proving absence after an entry");
+/// Error Message: "host-provided entry ptr is not 'link map entry'-aligned"
+pub const ERR_LINK_MAP_ENTRY_PTR_IS_NOT_ENTRY_ALIGNED: MasmError = MasmError::from_static_str("host-provided entry ptr is not 'link map entry'-aligned");
+/// Error Message: "host-provided entry ptr is outside the valid memory region"
+pub const ERR_LINK_MAP_ENTRY_PTR_IS_OUTSIDE_VALID_MEMORY_REGION: MasmError = MasmError::from_static_str("host-provided entry ptr is outside the valid memory region");
+/// Error Message: "map ptr stored in host-provided entry does not match actual pointer of the map"
+pub const ERR_LINK_MAP_MAP_PTR_IN_ENTRY_DOES_NOT_MATCH_EXPECTED_MAP_PTR: MasmError = MasmError::from_static_str("map ptr stored in host-provided entry does not match actual pointer of the map");
+/// Error Message: "number of link map entries exceeds maximum"
+pub const ERR_LINK_MAP_MAX_ENTRIES_EXCEEDED: MasmError = MasmError::from_static_str("number of link map entries exceeds maximum");
+/// Error Message: "provided key does not match key in map entry"
+pub const ERR_LINK_MAP_PROVIDED_KEY_NOT_EQUAL_TO_ENTRY_KEY: MasmError = MasmError::from_static_str("provided key does not match key in map entry");
+/// Error Message: "provided key is not greater than the entry key"
+pub const ERR_LINK_MAP_PROVIDED_KEY_NOT_GREATER_THAN_ENTRY_KEY: MasmError = MasmError::from_static_str("provided key is not greater than the entry key");
+/// Error Message: "provided key is not less than the entry key"
+pub const ERR_LINK_MAP_PROVIDED_KEY_NOT_LESS_THAN_ENTRY_KEY: MasmError = MasmError::from_static_str("provided key is not less than the entry key");
 
 /// Error Message: "non-fungible asset that already exists in the note cannot be added again"
 pub const ERR_NON_FUNGIBLE_ASSET_ALREADY_EXISTS: MasmError = MasmError::from_static_str("non-fungible asset that already exists in the note cannot be added again");
@@ -167,7 +188,7 @@ pub const ERR_PROLOGUE_NEW_FUNGIBLE_FAUCET_RESERVED_SLOT_MUST_BE_EMPTY: MasmErro
 /// Error Message: "reserved slot for new non-fungible faucet has an invalid type"
 pub const ERR_PROLOGUE_NEW_NON_FUNGIBLE_FAUCET_RESERVED_SLOT_INVALID_TYPE: MasmError = MasmError::from_static_str("reserved slot for new non-fungible faucet has an invalid type");
 /// Error Message: "reserved slot for non-fungible faucet is not a valid empty SMT"
-pub const ERR_PROLOGUE_NEW_NON_FUNGIBLE_FAUCET_RESERVED_SLOT_MUST_BE_VALID_EMPY_SMT: MasmError = MasmError::from_static_str("reserved slot for non-fungible faucet is not a valid empty SMT");
+pub const ERR_PROLOGUE_NEW_NON_FUNGIBLE_FAUCET_RESERVED_SLOT_MUST_BE_VALID_EMPTY_SMT: MasmError = MasmError::from_static_str("reserved slot for non-fungible faucet is not a valid empty SMT");
 /// Error Message: "number of input notes exceeds the kernel's maximum limit of 1024"
 pub const ERR_PROLOGUE_NUMBER_OF_INPUT_NOTES_EXCEEDS_LIMIT: MasmError = MasmError::from_static_str("number of input notes exceeds the kernel's maximum limit of 1024");
 /// Error Message: "number of note assets exceeds the maximum limit of 256"

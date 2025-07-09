@@ -3,6 +3,7 @@ use.std::collections::mmr
 use.std::crypto::hashes::rpo
 
 use.kernel::account
+use.kernel::account_id
 use.kernel::asset_vault
 use.kernel::constants
 use.kernel::memory
@@ -26,7 +27,7 @@ const.ERR_PROLOGUE_NEW_FUNGIBLE_FAUCET_RESERVED_SLOT_MUST_BE_EMPTY="reserved slo
 
 const.ERR_PROLOGUE_NEW_FUNGIBLE_FAUCET_RESERVED_SLOT_INVALID_TYPE="reserved slot for new fungible faucet has an invalid type"
 
-const.ERR_PROLOGUE_NEW_NON_FUNGIBLE_FAUCET_RESERVED_SLOT_MUST_BE_VALID_EMPY_SMT="reserved slot for non-fungible faucet is not a valid empty SMT"
+const.ERR_PROLOGUE_NEW_NON_FUNGIBLE_FAUCET_RESERVED_SLOT_MUST_BE_VALID_EMPTY_SMT="reserved slot for non-fungible faucet is not a valid empty SMT"
 
 const.ERR_PROLOGUE_NEW_NON_FUNGIBLE_FAUCET_RESERVED_SLOT_INVALID_TYPE="reserved slot for new non-fungible faucet has an invalid type"
 
@@ -315,7 +316,7 @@ end
 #! Outputs: []
 proc.validate_new_account
     # Assert the account ID of the account is valid
-    exec.memory::get_account_id exec.account::validate_id
+    exec.memory::get_account_id exec.account_id::validate
     # => []
 
     # Assert the account nonce is 0
@@ -338,7 +339,7 @@ proc.validate_new_account
     # Assert faucet reserved slot is correctly initialized
     # ---------------------------------------------------------------------------------------------
     # check if the account is a faucet
-    exec.account::get_id swap drop dup exec.account::is_faucet
+    exec.account::get_id swap drop dup exec.account_id::is_faucet
     # => [is_faucet, acct_id_prefix]
 
     # process conditional logic depending on whether the account is a faucet
@@ -348,7 +349,7 @@ proc.validate_new_account
         # => [FAUCET_RESERVED_SLOT, acct_id_prefix]
 
         # check if the account is a fungible faucet
-        movup.4 exec.account::is_fungible_faucet
+        movup.4 exec.account_id::is_fungible_faucet
         # => [is_fungible_faucet, FAUCET_RESERVED_SLOT]
 
         if.true
@@ -370,7 +371,7 @@ proc.validate_new_account
             # assert the non-fungible faucet reserved slot is initialized correctly (root of
             # empty SMT)
             exec.constants::get_empty_smt_root
-            assert_eqw.err=ERR_PROLOGUE_NEW_NON_FUNGIBLE_FAUCET_RESERVED_SLOT_MUST_BE_VALID_EMPY_SMT
+            assert_eqw.err=ERR_PROLOGUE_NEW_NON_FUNGIBLE_FAUCET_RESERVED_SLOT_MUST_BE_VALID_EMPTY_SMT
             # => []
 
             # get the faucet reserved storage data slot type
@@ -466,7 +467,7 @@ proc.process_account_data
     # assert the account ID matches the account ID in global inputs
     exec.memory::get_global_acct_id
     exec.memory::get_account_id
-    exec.account::is_id_equal assert.err=ERR_PROLOGUE_MISMATCH_OF_ACCOUNT_IDS_FROM_GLOBAL_INPUTS_AND_ADVICE_PROVIDER
+    exec.account_id::is_equal assert.err=ERR_PROLOGUE_MISMATCH_OF_ACCOUNT_IDS_FROM_GLOBAL_INPUTS_AND_ADVICE_PROVIDER
     # => [ACCOUNT_COMMITMENT]
 
     # store a copy of the initial nonce in global inputs
@@ -1087,20 +1088,30 @@ end
 #!
 #! Inputs:
 #!   Operand stack: []
-#!   Advice stack: [TX_SCRIPT_ROOT]
+#!   Advice stack: [TX_SCRIPT_ROOT, TX_SCRIPT_ARGS_KEY]
 #! Outputs:
 #!   Operand stack: []
 #!   Advice stack: []
 #!
 #! Where:
 #! - TX_SCRIPT_ROOT is the transaction's script root.
-proc.process_tx_script_root
+#! - TX_SCRIPT_ARGS_KEY is the commitment of the transaction script args used to obtain them from 
+#!   the advice map.
+proc.process_tx_script_data
     # read the transaction script root from the advice stack
     adv_loadw
     # => [TX_SCRIPT_ROOT]
 
     # store the transaction script root in memory
     exec.memory::set_tx_script_root dropw
+    # => []
+
+    # read the transaction script args key from the advice stack
+    adv_loadw
+    # => [TX_SCRIPT_ARGS_KEY]
+
+    # store the transaction script args key in memory
+    exec.memory::set_tx_script_args_key dropw
     # => []
 end
 
@@ -1137,6 +1148,7 @@ end
 #!     ACCOUNT_CODE_COMMITMENT,
 #!     number_of_input_notes,
 #!     TX_SCRIPT_ROOT,
+#!     TX_SCRIPT_ARGS_KEY,
 #!   ]
 #!   Advice map: {
 #!      PARTIAL_BLOCKCHAIN_COMMITMENT: [MMR_PEAKS],
@@ -1195,7 +1207,7 @@ export.prepare_transaction
     exec.process_chain_data
     exec.process_account_data
     exec.process_input_notes_data
-    exec.process_tx_script_root
+    exec.process_tx_script_data
     # => []
 
     push.MAX_BLOCK_NUM exec.memory::set_expiration_block_num

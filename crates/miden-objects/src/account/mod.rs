@@ -6,7 +6,7 @@ use crate::{
 
 mod account_id;
 pub use account_id::{
-    AccountId, AccountIdAnchor, AccountIdPrefix, AccountIdPrefixV0, AccountIdV0, AccountIdVersion,
+    AccountId, AccountIdPrefix, AccountIdPrefixV0, AccountIdV0, AccountIdVersion,
     AccountStorageMode, AccountType, AddressType, NetworkId,
 };
 
@@ -129,6 +129,8 @@ impl Account {
     /// - The number of procedures in all merged libraries is 0 or exceeds
     ///   [`AccountCode::MAX_NUM_PROCEDURES`].
     /// - Two or more libraries export a procedure with the same MAST root.
+    /// - The first component doesn't contain exactly one authentication procedure.
+    /// - Other components contain authentication procedures.
     /// - The number of [`StorageSlot`]s of all components exceeds 255.
     /// - [`MastForest::merge`](vm_processor::MastForest::merge) fails on all libraries.
     pub(super) fn initialize_from_components(
@@ -280,28 +282,29 @@ impl Account {
         self.storage.apply_delta(delta.storage())?;
 
         // update nonce
-        if let Some(nonce) = delta.nonce() {
-            self.set_nonce(nonce)?;
-        }
+        self.increment_nonce(delta.nonce_delta())?;
 
         Ok(())
     }
 
-    /// Sets the nonce of this account to the specified nonce value.
+    /// Increments the nonce of this account by the provided increment.
     ///
     /// # Errors
+    ///
     /// Returns an error if:
-    /// - The new nonce is smaller than the actual account nonce
-    /// - The new nonce is equal to the actual account nonce
-    pub fn set_nonce(&mut self, nonce: Felt) -> Result<(), AccountError> {
-        if self.nonce.as_int() >= nonce.as_int() {
-            return Err(AccountError::NonceNotMonotonicallyIncreasing {
-                current: self.nonce.as_int(),
-                new: nonce.as_int(),
+    /// - Incrementing the nonce overflows a [`Felt`].
+    pub fn increment_nonce(&mut self, nonce_delta: Felt) -> Result<(), AccountError> {
+        let new_nonce = self.nonce + nonce_delta;
+
+        if new_nonce.as_int() < self.nonce.as_int() {
+            return Err(AccountError::NonceOverflow {
+                current: self.nonce,
+                increment: nonce_delta,
+                new: new_nonce,
             });
         }
 
-        self.nonce = nonce;
+        self.nonce = new_nonce;
 
         Ok(())
     }
@@ -425,7 +428,10 @@ mod tests {
         },
         asset::{Asset, AssetVault, FungibleAsset, NonFungibleAsset},
         testing::{
-            account_id::ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+            account_component::NoopAuthComponent,
+            account_id::{
+                ACCOUNT_ID_PRIVATE_SENDER, ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+            },
             storage::AccountStorageDeltaBuilder,
         },
     };
@@ -445,16 +451,22 @@ mod tests {
 
     #[test]
     fn test_serde_account_delta() {
-        let final_nonce = Felt::new(2);
+        let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
+        let nonce_delta = Felt::new(2);
         let asset_0 = FungibleAsset::mock(15);
         let asset_1 = NonFungibleAsset::mock(&[5, 5, 5]);
-        let storage_delta = AccountStorageDeltaBuilder::default()
+        let storage_delta = AccountStorageDeltaBuilder::new()
             .add_cleared_items([0])
             .add_updated_values([(1_u8, [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)])])
             .build()
             .unwrap();
-        let account_delta =
-            build_account_delta(vec![asset_1], vec![asset_0], final_nonce, storage_delta);
+        let account_delta = build_account_delta(
+            account_id,
+            vec![asset_1],
+            vec![asset_0],
+            nonce_delta,
+            storage_delta,
+        );
 
         let serialized = account_delta.to_bytes();
         let deserialized = AccountDelta::read_from_bytes(&serialized).unwrap();
@@ -464,6 +476,7 @@ mod tests {
     #[test]
     fn valid_account_delta_is_correctly_applied() {
         // build account
+        let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
         let init_nonce = Felt::new(1);
         let asset_0 = FungibleAsset::mock(100);
         let asset_1 = NonFungibleAsset::mock(&[1, 2, 3]);
@@ -504,14 +517,19 @@ mod tests {
 
         // build account delta
         let final_nonce = Felt::new(2);
-        let storage_delta = AccountStorageDeltaBuilder::default()
+        let storage_delta = AccountStorageDeltaBuilder::new()
             .add_cleared_items([0])
             .add_updated_values([(1, [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)])])
             .add_updated_maps([(2, updated_map)])
             .build()
             .unwrap();
-        let account_delta =
-            build_account_delta(vec![asset_1], vec![asset_0], final_nonce, storage_delta);
+        let account_delta = build_account_delta(
+            account_id,
+            vec![asset_1],
+            vec![asset_0],
+            final_nonce - init_nonce,
+            storage_delta,
+        );
 
         // apply delta and create final_account
         account.apply_delta(&account_delta).unwrap();
@@ -534,18 +552,20 @@ mod tests {
     #[should_panic]
     fn valid_account_delta_with_unchanged_nonce() {
         // build account
+        let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
         let init_nonce = Felt::new(1);
         let asset = FungibleAsset::mock(110);
         let mut account =
             build_account(vec![asset], init_nonce, vec![StorageSlot::Value(Word::default())]);
 
         // build account delta
-        let storage_delta = AccountStorageDeltaBuilder::default()
+        let storage_delta = AccountStorageDeltaBuilder::new()
             .add_cleared_items([0])
             .add_updated_values([(1_u8, [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)])])
             .build()
             .unwrap();
-        let account_delta = build_account_delta(vec![], vec![asset], init_nonce, storage_delta);
+        let account_delta =
+            build_account_delta(account_id, vec![], vec![asset], init_nonce, storage_delta);
 
         // apply delta
         account.apply_delta(&account_delta).unwrap()
@@ -555,6 +575,7 @@ mod tests {
     #[should_panic]
     fn valid_account_delta_with_decremented_nonce() {
         // build account
+        let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
         let init_nonce = Felt::new(2);
         let asset = FungibleAsset::mock(100);
         let mut account =
@@ -562,12 +583,13 @@ mod tests {
 
         // build account delta
         let final_nonce = Felt::new(1);
-        let storage_delta = AccountStorageDeltaBuilder::default()
+        let storage_delta = AccountStorageDeltaBuilder::new()
             .add_cleared_items([0])
             .add_updated_values([(1_u8, [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)])])
             .build()
             .unwrap();
-        let account_delta = build_account_delta(vec![], vec![asset], final_nonce, storage_delta);
+        let account_delta =
+            build_account_delta(account_id, vec![], vec![asset], final_nonce, storage_delta);
 
         // apply delta
         account.apply_delta(&account_delta).unwrap()
@@ -576,17 +598,19 @@ mod tests {
     #[test]
     fn empty_account_delta_with_incremented_nonce() {
         // build account
+        let account_id = AccountId::try_from(ACCOUNT_ID_PRIVATE_SENDER).unwrap();
         let init_nonce = Felt::new(1);
         let word = [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)];
         let storage_slot = StorageSlot::Value(word);
         let mut account = build_account(vec![], init_nonce, vec![storage_slot]);
 
         // build account delta
-        let final_nonce = Felt::new(2);
+        let nonce_delta = Felt::new(1);
         let account_delta = AccountDelta::new(
-            AccountStorageDelta::default(),
+            account_id,
+            AccountStorageDelta::new(),
             AccountVaultDelta::default(),
-            Some(final_nonce),
+            nonce_delta,
         )
         .unwrap();
 
@@ -595,13 +619,14 @@ mod tests {
     }
 
     pub fn build_account_delta(
+        account_id: AccountId,
         added_assets: Vec<Asset>,
         removed_assets: Vec<Asset>,
-        nonce: Felt,
+        nonce_delta: Felt,
         storage_delta: AccountStorageDelta,
     ) -> AccountDelta {
         let vault_delta = AccountVaultDelta::from_iters(added_assets, removed_assets);
-        AccountDelta::new(storage_delta, vault_delta, Some(nonce)).unwrap()
+        AccountDelta::new(account_id, storage_delta, vault_delta, nonce_delta).unwrap()
     }
 
     pub fn build_account(assets: Vec<Asset>, nonce: Felt, slots: Vec<StorageSlot>) -> Account {
@@ -654,12 +679,14 @@ mod tests {
         let library1 = Assembler::default().assemble_library([code1]).unwrap();
         let library2 = Assembler::default().assemble_library([code2]).unwrap();
 
+        let auth_component: AccountComponent =
+            NoopAuthComponent::new(Assembler::default()).unwrap().into();
         let component1 = AccountComponent::new(library1, vec![]).unwrap().with_supports_all_types();
         let component2 = AccountComponent::new(library2, vec![]).unwrap().with_supports_all_types();
 
         let err = Account::initialize_from_components(
             AccountType::RegularAccountUpdatableCode,
-            &[component1, component2],
+            &[auth_component, component1, component2],
         )
         .unwrap_err();
 

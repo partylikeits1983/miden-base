@@ -1,15 +1,18 @@
 use alloc::{boxed::Box, collections::BTreeSet, rc::Rc, sync::Arc};
 
-use miden_lib::transaction::{TransactionEvent, TransactionEventError};
+use miden_lib::transaction::{TransactionAdviceInputs, TransactionEvent, TransactionEventError};
 use miden_objects::{
     Digest,
     account::{AccountHeader, AccountVaultDelta},
     assembly::mast::MastNodeExt,
 };
-use miden_tx::{TransactionMastStore, host::AccountProcedureIndexMap};
+use miden_tx::{
+    TransactionMastStore,
+    host::{AccountProcedureIndexMap, LinkMap},
+};
 use vm_processor::{
-    AdviceInputs, AdviceProvider, AdviceSource, ContextId, ErrorContext, ExecutionError, Host,
-    MastForest, MastForestStore, MemAdviceProvider, ProcessState,
+    AdviceProvider, AdviceSource, ContextId, ErrorContext, ExecutionError, Host, MastForest,
+    MastForestStore, MemAdviceProvider, ProcessState,
 };
 
 // MOCK HOST
@@ -26,15 +29,16 @@ pub struct MockHost {
 }
 
 impl MockHost {
-    /// Returns a new [MockHost] instance with the provided [AdviceInputs].
+    /// Returns a new [MockHost] instance with the provided
+    /// [AdviceInputs](vm_processor::AdviceInputs).
     pub fn new(
         account: AccountHeader,
-        advice_inputs: AdviceInputs,
+        advice_inputs: TransactionAdviceInputs,
         mast_store: Rc<TransactionMastStore>,
         mut foreign_code_commitments: BTreeSet<Digest>,
     ) -> Self {
         foreign_code_commitments.insert(account.code_commitment());
-        let adv_provider: MemAdviceProvider = advice_inputs.into();
+        let adv_provider = MemAdviceProvider::from(advice_inputs.into_inner());
         let proc_index_map = AccountProcedureIndexMap::new(foreign_code_commitments, &adv_provider);
 
         Self {
@@ -100,6 +104,12 @@ impl Host for MockHost {
         match event {
             TransactionEvent::AccountPushProcedureIndex => {
                 self.on_push_account_procedure_index(process, err_ctx)
+            },
+            TransactionEvent::LinkMapSetEvent => {
+                LinkMap::handle_set_event(process, err_ctx, self.advice_provider_mut())
+            },
+            TransactionEvent::LinkMapGetEvent => {
+                LinkMap::handle_get_event(process, err_ctx, self.advice_provider_mut())
             },
             _ => Ok(()),
         }?;

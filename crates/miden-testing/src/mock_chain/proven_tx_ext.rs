@@ -21,7 +21,7 @@ impl ProvenTransactionExt for ProvenTransaction {
         let account_update_details = if initial_account.is_onchain() {
             if initial_account.is_new() {
                 let mut account = initial_account;
-                account.apply_delta(&account_delta).expect("account delta should be appliable");
+                account.apply_delta(&account_delta).expect("account delta should be applicable");
 
                 AccountUpdateDetails::New(account)
             } else {
@@ -35,6 +35,7 @@ impl ProvenTransactionExt for ProvenTransaction {
             executed_tx.account_id(),
             executed_tx.initial_account().init_commitment(),
             executed_tx.final_account().commitment(),
+            executed_tx.account_delta().commitment(),
             block_reference.block_num(),
             block_reference.commitment(),
             executed_tx.expiration_block_num(),

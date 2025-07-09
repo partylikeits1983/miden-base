@@ -11,7 +11,7 @@ use miden_lib::transaction::{
 };
 use miden_objects::{
     Digest, Hasher,
-    account::{AccountDelta, AccountHeader},
+    account::{AccountDelta, PartialAccount},
     assembly::mast::MastNodeExt,
     asset::Asset,
     note::NoteId,
@@ -26,11 +26,19 @@ use vm_processor::{
 mod account_delta_tracker;
 use account_delta_tracker::AccountDeltaTracker;
 
+mod storage_delta_tracker;
+
+mod link_map;
+pub use link_map::{Entry, EntryMetadata, LinkMap};
+
 mod account_procedures;
 pub use account_procedures::AccountProcedureIndexMap;
 
 mod note_builder;
 use note_builder::OutputNoteBuilder;
+
+mod script_mast_forest_store;
+pub use script_mast_forest_store::ScriptMastForestStore;
 
 mod tx_progress;
 pub use tx_progress::TransactionProgress;
@@ -45,13 +53,17 @@ use crate::{auth::TransactionAuthenticator, errors::TransactionHostError};
 /// Transaction hosts are created on a per-transaction basis. That is, a transaction host is meant
 /// to support execution of a single transaction and is discarded after the transaction finishes
 /// execution.
-pub struct TransactionHost<A> {
+pub struct TransactionHost<'store, 'auth, A> {
     /// Advice provider which is used to provide non-deterministic inputs to the transaction
     /// runtime.
     adv_provider: A,
 
-    /// MAST store which contains the code required to execute the transaction.
-    mast_store: Arc<dyn MastForestStore>,
+    /// MAST store which contains the code required to execute account code functions.
+    mast_store: &'store dyn MastForestStore,
+
+    /// MAST store which contains the forests of all scripts involved in the transaction. These
+    /// include input note scripts and the transaction script, but not account code.
+    scripts_mast_store: ScriptMastForestStore,
 
     /// Account state changes accumulated during transaction execution.
     ///
@@ -68,7 +80,7 @@ pub struct TransactionHost<A> {
 
     /// Serves signature generation requests from the transaction runtime for signatures which are
     /// not present in the `generated_signatures` field.
-    authenticator: Option<Arc<dyn TransactionAuthenticator>>,
+    authenticator: Option<&'auth dyn TransactionAuthenticator>,
 
     /// Contains previously generated signatures (as a message |-> signature map) required for
     /// transaction execution.
@@ -83,18 +95,33 @@ pub struct TransactionHost<A> {
     tx_progress: TransactionProgress,
 }
 
-impl<A: AdviceProvider> TransactionHost<A> {
+impl<'store, 'auth, A: AdviceProvider> TransactionHost<'store, 'auth, A> {
     /// Returns a new [TransactionHost] instance with the provided [AdviceProvider].
     pub fn new(
-        account: AccountHeader,
-        adv_provider: A,
-        mast_store: Arc<dyn MastForestStore>,
-        authenticator: Option<Arc<dyn TransactionAuthenticator>>,
+        account: &PartialAccount,
+        mut adv_provider: A,
+        mast_store: &'store dyn MastForestStore,
+        scripts_mast_store: ScriptMastForestStore,
+        authenticator: Option<&'auth dyn TransactionAuthenticator>,
         mut foreign_account_code_commitments: BTreeSet<Digest>,
     ) -> Result<Self, TransactionHostError> {
         // currently, the executor/prover do not keep track of the code commitment of the native
         // account, so we add it to the set here
-        foreign_account_code_commitments.insert(account.code_commitment());
+        foreign_account_code_commitments.insert(account.code().commitment());
+
+        // Insert the account advice map into the advice recorder.
+        // This ensures that the advice map is available during the note script execution when it
+        // calls the account's code that relies on the it's advice map data (data segments) loaded
+        // into the advice provider
+        for (key, values) in account.code().mast().advice_map().clone() {
+            adv_provider.insert_into_map(*key, values);
+        }
+
+        // Add all advice data from scripts_mast_store to the adv_provider. This ensures the
+        // advice provider has all the necessary data for script execution
+        for (key, values) in scripts_mast_store.advice_data().clone() {
+            adv_provider.insert_into_map(*key, values);
+        }
 
         let proc_index_map =
             AccountProcedureIndexMap::new(foreign_account_code_commitments, &adv_provider)?;
@@ -102,7 +129,11 @@ impl<A: AdviceProvider> TransactionHost<A> {
         Ok(Self {
             adv_provider,
             mast_store,
-            account_delta: AccountDeltaTracker::new(&account),
+            scripts_mast_store,
+            account_delta: AccountDeltaTracker::new(
+                account.id(),
+                account.storage().header().clone(),
+            ),
             acct_procedure_index_map: proc_index_map,
             output_notes: BTreeMap::default(),
             authenticator,
@@ -261,11 +292,11 @@ impl<A: AdviceProvider> TransactionHost<A> {
             process.get_stack_item(5),
         ];
 
-        // update the delta tracker only if the current and new values are different
-        if current_slot_value != new_slot_value {
-            let slot_index = slot_index.as_int() as u8;
-            self.account_delta.storage_delta().set_item(slot_index, new_slot_value);
-        }
+        self.account_delta.storage().set_item(
+            slot_index.as_int() as u8,
+            current_slot_value,
+            new_slot_value,
+        );
 
         Ok(())
     }
@@ -273,7 +304,7 @@ impl<A: AdviceProvider> TransactionHost<A> {
     /// Extracts information from the process state about the storage map being updated and
     /// records the latest values of this storage map.
     ///
-    /// Expected stack state: [slot_index, NEW_MAP_KEY, NEW_MAP_VALUE, ...]
+    /// Expected stack state: [slot_index, KEY, PREV_MAP_VALUE, NEW_MAP_VALUE]
     pub fn on_account_storage_after_set_map_item(
         &mut self,
         process: ProcessState,
@@ -292,25 +323,33 @@ impl<A: AdviceProvider> TransactionHost<A> {
         }
 
         // get the KEY to which the slot is being updated
-        let new_map_key = [
+        let key = [
             process.get_stack_item(4),
             process.get_stack_item(3),
             process.get_stack_item(2),
             process.get_stack_item(1),
         ];
 
-        // get the VALUE to which the slot is being updated
-        let new_map_value = [
+        // get the previous VALUE of the slot
+        let prev_map_value = [
             process.get_stack_item(8),
             process.get_stack_item(7),
             process.get_stack_item(6),
             process.get_stack_item(5),
         ];
 
-        let slot_index = slot_index.as_int() as u8;
-        self.account_delta.storage_delta().set_map_item(
-            slot_index,
-            new_map_key.into(),
+        // get the VALUE to which the slot is being updated
+        let new_map_value = [
+            process.get_stack_item(12),
+            process.get_stack_item(11),
+            process.get_stack_item(10),
+            process.get_stack_item(9),
+        ];
+
+        self.account_delta.storage().set_map_item(
+            slot_index.as_int() as u8,
+            key.into(),
+            prev_map_value,
             new_map_value,
         );
 
@@ -468,7 +507,7 @@ impl<A: AdviceProvider> TransactionHost<A> {
 // HOST IMPLEMENTATION FOR TRANSACTION HOST
 // ================================================================================================
 
-impl<A: AdviceProvider> Host for TransactionHost<A> {
+impl<A: AdviceProvider> Host for TransactionHost<'_, '_, A> {
     type AdviceProvider = A;
 
     fn advice_provider(&self) -> &Self::AdviceProvider {
@@ -480,7 +519,11 @@ impl<A: AdviceProvider> Host for TransactionHost<A> {
     }
 
     fn get_mast_forest(&self, node_digest: &Digest) -> Option<Arc<MastForest>> {
-        self.mast_store.get(node_digest)
+        // Search in the note MAST forest store, otherwise fall back to the user-provided store
+        match self.scripts_mast_store.get(node_digest) {
+            Some(forest) => Some(forest),
+            None => self.mast_store.get(node_digest),
+        }
     }
 
     fn on_event(
@@ -585,6 +628,14 @@ impl<A: AdviceProvider> Host for TransactionHost<A> {
             }
             TransactionEvent::EpilogueEnd => {
                 self.tx_progress.end_epilogue(process.clk());
+                Ok(())
+            }
+            TransactionEvent::LinkMapSetEvent => {
+                LinkMap::handle_set_event(process, err_ctx, self.advice_provider_mut())?;
+                Ok(())
+            },
+            TransactionEvent::LinkMapGetEvent => {
+                LinkMap::handle_get_event(process, err_ctx, self.advice_provider_mut())?;
                 Ok(())
             }
         }

@@ -1,5 +1,6 @@
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, vec::Vec};
 
+use anyhow::Context;
 use miden_lib::{
     errors::tx_kernel_errors::{
         ERR_NON_FUNGIBLE_ASSET_ALREADY_EXISTS, ERR_TX_NUMBER_OF_OUTPUT_NOTES_EXCEEDS_LIMIT,
@@ -15,8 +16,8 @@ use miden_lib::{
 };
 use miden_objects::{
     FieldElement,
-    account::AccountId,
-    asset::NonFungibleAsset,
+    account::{Account, AccountId},
+    asset::{FungibleAsset, NonFungibleAsset},
     block::BlockNumber,
     note::{
         Note, NoteAssets, NoteExecutionHint, NoteExecutionMode, NoteInputs, NoteMetadata,
@@ -25,8 +26,9 @@ use miden_objects::{
     testing::{
         account_id::{
             ACCOUNT_ID_NETWORK_NON_FUNGIBLE_FAUCET, ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
-            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
-            ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+            ACCOUNT_ID_PRIVATE_SENDER, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2, ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
+            ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE, ACCOUNT_ID_SENDER,
         },
         constants::NON_FUNGIBLE_ASSET_DATA_2,
     },
@@ -37,34 +39,37 @@ use miden_tx::{TransactionExecutor, TransactionExecutorError};
 use super::{Felt, ONE, ProcessState, Word, ZERO};
 use crate::{
     Auth, MockChain, TransactionContextBuilder, assert_execution_error,
-    kernel_tests::tx::read_root_mem_word,
+    kernel_tests::tx::read_root_mem_word, utils::create_p2any_note,
 };
 
 #[test]
-fn test_fpi_anchoring_validations() {
+fn test_fpi_anchoring_validations() -> anyhow::Result<()> {
     // Create a chain with an account
     let mut mock_chain = MockChain::new();
     let account = mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![]);
-    mock_chain.prove_next_block();
+    mock_chain.prove_next_block()?;
 
     // Retrieve inputs which will become stale
-    let inputs = mock_chain.get_foreign_account_inputs(account.id());
+    let inputs = mock_chain
+        .get_foreign_account_inputs(account.id())
+        .expect("failed to get foreign account inputs");
 
     // Add account to modify account tree
     let new_account = mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![]);
-    mock_chain.prove_next_block();
+    mock_chain.prove_next_block()?;
 
     // Attempt to execute with older foreign account inputs
     let transaction = mock_chain
-        .build_tx_context(new_account.id(), &[], &[])
+        .build_tx_context(new_account.id(), &[], &[])?
         .foreign_accounts(vec![inputs])
-        .build()
+        .build()?
         .execute();
 
     assert_matches::assert_matches!(
         transaction,
         Err(TransactionExecutorError::ForeignAccountNotAnchoredInReference(_))
     );
+    Ok(())
 }
 
 #[allow(clippy::arc_with_non_send_sync)]
@@ -82,23 +87,23 @@ fn test_future_input_note_fails() -> anyhow::Result<()> {
             ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE.try_into().unwrap(),
             &[],
             NoteType::Private,
-            None,
         )
         .unwrap();
-    mock_chain.prove_next_block();
+    mock_chain.prove_next_block()?;
 
     // Get as input note, and assert that the note was created after block 1 (which we'll
     // use as reference)
     let input_note = mock_chain.get_public_note(&note.id()).expect("note not found");
     assert!(input_note.location().unwrap().block_num() > 1.into());
 
-    mock_chain.prove_next_block();
+    mock_chain.prove_next_block()?;
+    mock_chain.prove_next_block()?;
 
     // Attempt to execute with a note created in the future
-    let tx_context = mock_chain.build_tx_context(account.id(), &[], &[]).build();
+    let tx_context = mock_chain.build_tx_context(account.id(), &[], &[])?.build()?;
     let source_manager = tx_context.source_manager();
 
-    let tx_executor = TransactionExecutor::new(Arc::new(tx_context), None);
+    let tx_executor = TransactionExecutor::new(&tx_context, None);
     // Try to execute with block_ref==1
     let error = tx_executor.execute_transaction(
         account.id(),
@@ -117,17 +122,17 @@ fn test_future_input_note_fails() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_create_note() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+fn test_create_note() -> anyhow::Result<()> {
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build()?;
     let account_id = tx_context.account().id();
 
     let recipient = [ZERO, ONE, Felt::new(2), Felt::new(3)];
     let aux = Felt::new(27);
-    let tag = NoteTag::from_account_id(account_id, NoteExecutionMode::Local).unwrap();
+    let tag = NoteTag::from_account_id(account_id);
 
     let code = format!(
         "
-        use.miden::contracts::wallets::basic->wallet
+        use.miden::tx
         
         use.kernel::prologue
 
@@ -140,7 +145,7 @@ fn test_create_note() {
             push.{aux}
             push.{tag}
 
-            call.wallet::create_note
+            call.tx::create_note
 
             # truncate the stack
             swapdw dropw dropw
@@ -152,12 +157,10 @@ fn test_create_note() {
         tag = tag,
     );
 
-    let process = &tx_context
-        .execute_code_with_assembler(
-            &code,
-            TransactionKernel::testing_assembler_with_mock_account(),
-        )
-        .unwrap();
+    let process = &tx_context.execute_code_with_assembler(
+        &code,
+        TransactionKernel::testing_assembler_with_mock_account(),
+    )?;
 
     assert_eq!(
         read_root_mem_word(&process.into(), NUM_OUTPUT_NOTES_PTR),
@@ -178,10 +181,9 @@ fn test_create_note() {
         account_id,
         NoteType::Public,
         tag,
-        NoteExecutionHint::after_block(23.into()).unwrap(),
+        NoteExecutionHint::after_block(23.into())?,
         Felt::new(27),
-    )
-    .unwrap()
+    )?
     .into();
 
     assert_eq!(
@@ -203,11 +205,12 @@ fn test_create_note() {
         ZERO,
         "top item on the stack is the index of the output note"
     );
+    Ok(())
 }
 
 #[test]
-fn test_create_note_with_invalid_tag() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+fn test_create_note_with_invalid_tag() -> anyhow::Result<()> {
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build()?;
 
     let invalid_tag = Felt::new((NoteType::Public as u64) << 62);
     let valid_tag: Felt = NoteTag::for_local_use_case(0, 0).unwrap().into();
@@ -230,11 +233,13 @@ fn test_create_note_with_invalid_tag() {
             )
             .is_ok()
     );
+    Ok(())
+}
 
-    fn note_creation_script(tag: Felt) -> String {
-        format!(
-            "
-            use.miden::contracts::wallets::basic->wallet
+fn note_creation_script(tag: Felt) -> String {
+    format!(
+        "
+            use.miden::tx
             use.kernel::prologue
     
             begin
@@ -246,27 +251,26 @@ fn test_create_note_with_invalid_tag() {
                 push.{aux}
                 push.{tag}
     
-                call.wallet::create_note
+                call.tx::create_note
 
                 # clean the stack
                 dropw dropw
             end
             ",
-            recipient = word_to_masm_push_string(&[ZERO, ONE, Felt::new(2), Felt::new(3)]),
-            execution_hint_always = Felt::from(NoteExecutionHint::always()),
-            PUBLIC_NOTE = NoteType::Public as u8,
-            aux = Felt::ZERO,
-        )
-    }
+        recipient = word_to_masm_push_string(&[ZERO, ONE, Felt::new(2), Felt::new(3)]),
+        execution_hint_always = Felt::from(NoteExecutionHint::always()),
+        PUBLIC_NOTE = NoteType::Public as u8,
+        aux = Felt::ZERO,
+    )
 }
 
 #[test]
-fn test_create_note_too_many_notes() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+fn test_create_note_too_many_notes() -> anyhow::Result<()> {
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build()?;
 
     let code = format!(
         "
-        use.miden::contracts::wallets::basic->wallet
+        use.miden::tx
         use.kernel::constants
         use.kernel::memory
         use.kernel::prologue
@@ -282,7 +286,7 @@ fn test_create_note_too_many_notes() {
             push.{aux}
             push.{tag}
 
-            call.wallet::create_note
+            call.tx::create_note
         end
         ",
         tag = NoteTag::for_local_use_case(1234, 5678).unwrap(),
@@ -298,54 +302,83 @@ fn test_create_note_too_many_notes() {
     );
 
     assert_execution_error!(process, ERR_TX_NUMBER_OF_OUTPUT_NOTES_EXCEEDS_LIMIT);
+    Ok(())
 }
 
 #[test]
-fn test_get_output_notes_commitment() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE)
-        .with_mock_notes_preserved()
-        .build();
+fn test_get_output_notes_commitment() -> anyhow::Result<()> {
+    let tx_context = {
+        let account = Account::mock(
+            ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
+            Felt::ONE,
+            Auth::IncrNonce,
+            TransactionKernel::testing_assembler(),
+        );
+
+        let output_note_1 =
+            create_p2any_note(ACCOUNT_ID_SENDER.try_into()?, &[FungibleAsset::mock(100)]);
+
+        let input_note_1 =
+            create_p2any_note(ACCOUNT_ID_PRIVATE_SENDER.try_into()?, &[FungibleAsset::mock(100)]);
+
+        let input_note_2 =
+            create_p2any_note(ACCOUNT_ID_PRIVATE_SENDER.try_into()?, &[FungibleAsset::mock(200)]);
+
+        TransactionContextBuilder::new(account)
+            .extend_input_notes(vec![input_note_1, input_note_2])
+            .extend_expected_output_notes(vec![OutputNote::Full(output_note_1)])
+            .build()?
+    };
 
     // extract input note data
     let input_note_1 = tx_context.tx_inputs().input_notes().get_note(0).note();
-    let input_asset_1 = **input_note_1.assets().iter().take(1).collect::<Vec<_>>().first().unwrap();
+    let input_asset_1 = **input_note_1
+        .assets()
+        .iter()
+        .take(1)
+        .collect::<Vec<_>>()
+        .first()
+        .context("getting first expected input asset")?;
     let input_note_2 = tx_context.tx_inputs().input_notes().get_note(1).note();
-    let input_asset_2 = **input_note_2.assets().iter().take(1).collect::<Vec<_>>().first().unwrap();
+    let input_asset_2 = **input_note_2
+        .assets()
+        .iter()
+        .take(1)
+        .collect::<Vec<_>>()
+        .first()
+        .context("getting second expected input asset")?;
 
     // Choose random accounts as the target for the note tag.
-    let network_account = AccountId::try_from(ACCOUNT_ID_NETWORK_NON_FUNGIBLE_FAUCET).unwrap();
-    let local_account = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET).unwrap();
+    let network_account = AccountId::try_from(ACCOUNT_ID_NETWORK_NON_FUNGIBLE_FAUCET)?;
+    let local_account = AccountId::try_from(ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET)?;
 
     // create output note 1
     let output_serial_no_1 = [Felt::new(8); 4];
-    let output_tag_1 =
-        NoteTag::from_account_id(network_account, NoteExecutionMode::Network).unwrap();
-    let assets = NoteAssets::new(vec![input_asset_1]).unwrap();
+    let output_tag_1 = NoteTag::from_account_id(network_account);
+    let assets = NoteAssets::new(vec![input_asset_1])?;
     let metadata = NoteMetadata::new(
         tx_context.tx_inputs().account().id(),
         NoteType::Public,
         output_tag_1,
         NoteExecutionHint::Always,
         ZERO,
-    )
-    .unwrap();
-    let inputs = NoteInputs::new(vec![]).unwrap();
+    )?;
+    let inputs = NoteInputs::new(vec![])?;
     let recipient = NoteRecipient::new(output_serial_no_1, input_note_1.script().clone(), inputs);
     let output_note_1 = Note::new(assets, metadata, recipient);
 
     // create output note 2
     let output_serial_no_2 = [Felt::new(11); 4];
-    let output_tag_2 = NoteTag::from_account_id(local_account, NoteExecutionMode::Local).unwrap();
-    let assets = NoteAssets::new(vec![input_asset_2]).unwrap();
+    let output_tag_2 = NoteTag::from_account_id(local_account);
+    let assets = NoteAssets::new(vec![input_asset_2])?;
     let metadata = NoteMetadata::new(
         tx_context.tx_inputs().account().id(),
         NoteType::Public,
         output_tag_2,
-        NoteExecutionHint::after_block(123.into()).unwrap(),
+        NoteExecutionHint::after_block(123.into())?,
         ZERO,
-    )
-    .unwrap();
-    let inputs = NoteInputs::new(vec![]).unwrap();
+    )?;
+    let inputs = NoteInputs::new(vec![])?;
     let recipient = NoteRecipient::new(output_serial_no_2, input_note_2.script().clone(), inputs);
     let output_note_2 = Note::new(assets, metadata, recipient);
 
@@ -353,15 +386,13 @@ fn test_get_output_notes_commitment() {
     let expected_output_notes_commitment = OutputNotes::new(vec![
         OutputNote::Full(output_note_1.clone()),
         OutputNote::Full(output_note_2.clone()),
-    ])
-    .unwrap()
+    ])?
     .commitment();
 
     let code = format!(
         "
         use.std::sys
 
-        use.miden::contracts::wallets::basic->wallet
         use.miden::tx
 
         use.kernel::prologue
@@ -378,11 +409,11 @@ fn test_get_output_notes_commitment() {
             push.{PUBLIC_NOTE}
             push.{aux_1}
             push.{tag_1}
-            call.wallet::create_note
+            call.tx::create_note
             # => [note_idx]
 
             push.{asset_1}
-            call.account::add_asset_to_note
+            call.tx::add_asset_to_note
             # => [ASSET, note_idx]
             
             dropw drop
@@ -394,11 +425,11 @@ fn test_get_output_notes_commitment() {
             push.{PUBLIC_NOTE}
             push.{aux_2}
             push.{tag_2}
-            call.wallet::create_note
+            call.tx::create_note
             # => [note_idx]
 
             push.{asset_2} 
-            call.account::add_asset_to_note
+            call.tx::add_asset_to_note
             # => [ASSET, note_idx]
 
             dropw drop
@@ -430,12 +461,10 @@ fn test_get_output_notes_commitment() {
         )),
     );
 
-    let process = &tx_context
-        .execute_code_with_assembler(
-            &code,
-            TransactionKernel::testing_assembler_with_mock_account(),
-        )
-        .unwrap();
+    let process = &tx_context.execute_code_with_assembler(
+        &code,
+        TransactionKernel::testing_assembler_with_mock_account(),
+    )?;
     let process_state: ProcessState = process.into();
 
     assert_eq!(
@@ -463,21 +492,22 @@ fn test_get_output_notes_commitment() {
     );
 
     assert_eq!(process_state.get_stack_word(0), *expected_output_notes_commitment);
+    Ok(())
 }
 
 #[test]
-fn test_create_note_and_add_asset() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+fn test_create_note_and_add_asset() -> anyhow::Result<()> {
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build()?;
 
-    let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap();
+    let faucet_id = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
     let recipient = [ZERO, ONE, Felt::new(2), Felt::new(3)];
     let aux = Felt::new(27);
-    let tag = NoteTag::from_account_id(faucet_id, NoteExecutionMode::Local).unwrap();
+    let tag = NoteTag::from_account_id(faucet_id);
     let asset = [Felt::new(10), ZERO, faucet_id.suffix(), faucet_id.prefix().as_felt()];
 
     let code = format!(
         "
-        use.miden::contracts::wallets::basic->wallet
+        use.miden::tx
 
         use.kernel::prologue
         use.test::account
@@ -491,11 +521,11 @@ fn test_create_note_and_add_asset() {
             push.{aux}
             push.{tag}
 
-            call.wallet::create_note
+            call.tx::create_note
             # => [note_idx]
 
             push.{asset}
-            call.account::add_asset_to_note
+            call.tx::add_asset_to_note
             # => [ASSET, note_idx]
 
             dropw
@@ -512,12 +542,10 @@ fn test_create_note_and_add_asset() {
         asset = word_to_masm_push_string(&asset),
     );
 
-    let process = &tx_context
-        .execute_code_with_assembler(
-            &code,
-            TransactionKernel::testing_assembler_with_mock_account(),
-        )
-        .unwrap();
+    let process = &tx_context.execute_code_with_assembler(
+        &code,
+        TransactionKernel::testing_assembler_with_mock_account(),
+    )?;
     let process_state: ProcessState = process.into();
 
     assert_eq!(
@@ -531,18 +559,19 @@ fn test_create_note_and_add_asset() {
         ZERO,
         "top item on the stack is the index to the output note"
     );
+    Ok(())
 }
 
 #[test]
-fn test_create_note_and_add_multiple_assets() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+fn test_create_note_and_add_multiple_assets() -> anyhow::Result<()> {
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build()?;
 
-    let faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET).unwrap();
-    let faucet_2 = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2).unwrap();
+    let faucet = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
+    let faucet_2 = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2)?;
 
     let recipient = [ZERO, ONE, Felt::new(2), Felt::new(3)];
     let aux = Felt::new(27);
-    let tag = NoteTag::from_account_id(faucet_2, NoteExecutionMode::Local).unwrap();
+    let tag = NoteTag::from_account_id(faucet_2);
 
     let asset = [Felt::new(10), ZERO, faucet.suffix(), faucet.prefix().as_felt()];
     let asset_2 = [Felt::new(20), ZERO, faucet_2.suffix(), faucet_2.prefix().as_felt()];
@@ -554,7 +583,7 @@ fn test_create_note_and_add_multiple_assets() {
 
     let code = format!(
         "
-        use.miden::contracts::wallets::basic->wallet
+        use.miden::tx
 
         use.kernel::prologue
         use.test::account
@@ -567,23 +596,23 @@ fn test_create_note_and_add_multiple_assets() {
             push.{aux}
             push.{tag}
 
-            call.wallet::create_note
+            call.tx::create_note
             # => [note_idx]
 
             push.{asset}
-            call.account::add_asset_to_note dropw
+            call.tx::add_asset_to_note dropw
             # => [note_idx]
 
             push.{asset_2}
-            call.account::add_asset_to_note dropw
+            call.tx::add_asset_to_note dropw
             # => [note_idx]
 
             push.{asset_3}
-            call.account::add_asset_to_note dropw
+            call.tx::add_asset_to_note dropw
             # => [note_idx]
 
             push.{nft}
-            call.account::add_asset_to_note dropw
+            call.tx::add_asset_to_note dropw
             # => [note_idx]
 
             # truncate the stack
@@ -599,12 +628,10 @@ fn test_create_note_and_add_multiple_assets() {
         nft = word_to_masm_push_string(&non_fungible_asset_encoded),
     );
 
-    let process = &tx_context
-        .execute_code_with_assembler(
-            &code,
-            TransactionKernel::testing_assembler_with_mock_account(),
-        )
-        .unwrap();
+    let process = &tx_context.execute_code_with_assembler(
+        &code,
+        TransactionKernel::testing_assembler_with_mock_account(),
+    )?;
     let process_state: ProcessState = process.into();
 
     assert_eq!(
@@ -636,11 +663,12 @@ fn test_create_note_and_add_multiple_assets() {
         ZERO,
         "top item on the stack is the index to the output note"
     );
+    Ok(())
 }
 
 #[test]
-fn test_create_note_and_add_same_nft_twice() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+fn test_create_note_and_add_same_nft_twice() -> anyhow::Result<()> {
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build()?;
 
     let recipient = [ZERO, ONE, Felt::new(2), Felt::new(3)];
     let tag = NoteTag::for_public_use_case(999, 777, NoteExecutionMode::Local).unwrap();
@@ -651,7 +679,7 @@ fn test_create_note_and_add_same_nft_twice() {
         "
         use.kernel::prologue
         use.test::account
-        use.miden::contracts::wallets::basic->wallet
+        use.miden::tx
 
         begin
             exec.prologue::prepare_transaction
@@ -664,16 +692,16 @@ fn test_create_note_and_add_same_nft_twice() {
             push.{aux}
             push.{tag}
 
-            call.wallet::create_note
+            call.tx::create_note
             # => [note_idx, pad(15)]
 
             push.{nft} 
-            call.account::add_asset_to_note
+            call.tx::add_asset_to_note
             # => [NFT, note_idx, pad(15)]
             dropw
 
             push.{nft} 
-            call.account::add_asset_to_note
+            call.tx::add_asset_to_note
             # => [NFT, note_idx, pad(15)]
 
             repeat.5 dropw end
@@ -693,14 +721,25 @@ fn test_create_note_and_add_same_nft_twice() {
     );
 
     assert_execution_error!(process, ERR_NON_FUNGIBLE_ASSET_ALREADY_EXISTS);
+    Ok(())
 }
 
 #[test]
-fn test_build_recipient_hash() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE)
-        .with_mock_notes_preserved()
-        .build();
+fn test_build_recipient_hash() -> anyhow::Result<()> {
+    let tx_context = {
+        let account = Account::mock(
+            ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
+            Felt::ONE,
+            Auth::IncrNonce,
+            TransactionKernel::testing_assembler(),
+        );
 
+        let input_note_1 =
+            create_p2any_note(ACCOUNT_ID_SENDER.try_into().unwrap(), &[FungibleAsset::mock(100)]);
+        TransactionContextBuilder::new(account)
+            .extend_input_notes(vec![input_note_1])
+            .build()?
+    };
     let input_note_1 = tx_context.tx_inputs().input_notes().get_note(0).note();
 
     // create output note
@@ -714,7 +753,6 @@ fn test_build_recipient_hash() {
     let recipient = NoteRecipient::new(output_serial_no, input_note_1.script().clone(), inputs);
     let code = format!(
         "
-        use.miden::contracts::wallets::basic->wallet
         use.miden::tx
         use.kernel::prologue
 
@@ -745,7 +783,7 @@ fn test_build_recipient_hash() {
             push.{tag}
             # => [tag, aux, note_type, execution_hint, RECIPIENT, pad(12)]
 
-            call.wallet::create_note
+            call.tx::create_note
             # => [note_idx, pad(19)]
 
             # clean the stack
@@ -760,12 +798,10 @@ fn test_build_recipient_hash() {
         aux = aux,
     );
 
-    let process = &tx_context
-        .execute_code_with_assembler(
-            &code,
-            TransactionKernel::testing_assembler_with_mock_account(),
-        )
-        .unwrap();
+    let process = &tx_context.execute_code_with_assembler(
+        &code,
+        TransactionKernel::testing_assembler_with_mock_account(),
+    )?;
 
     assert_eq!(
         read_root_mem_word(&process.into(), NUM_OUTPUT_NOTES_PTR),
@@ -783,14 +819,15 @@ fn test_build_recipient_hash() {
         recipient_digest.as_slice(),
         "recipient hash not correct",
     );
+    Ok(())
 }
 
 // BLOCK TESTS
 // ================================================================================================
 
 #[test]
-fn test_block_procedures() {
-    let tx_context = TransactionContextBuilder::with_standard_account(ONE).build();
+fn test_block_procedures() -> anyhow::Result<()> {
+    let tx_context = TransactionContextBuilder::with_existing_mock_account().build()?;
 
     let code = "
         use.miden::tx
@@ -810,9 +847,10 @@ fn test_block_procedures() {
         end
         ";
 
-    let process = &tx_context
-        .execute_code_with_assembler(code, TransactionKernel::testing_assembler_with_mock_account())
-        .unwrap();
+    let process = &tx_context.execute_code_with_assembler(
+        code,
+        TransactionKernel::testing_assembler_with_mock_account(),
+    )?;
 
     assert_eq!(
         process.stack.get_word(0),
@@ -831,4 +869,5 @@ fn test_block_procedures() {
         tx_context.tx_inputs().block_header().block_num().as_u64(),
         "sixth element on the stack should be equal to the block number"
     );
+    Ok(())
 }

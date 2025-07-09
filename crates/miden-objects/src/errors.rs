@@ -73,7 +73,11 @@ pub enum AccountComponentTemplateError {
 pub enum AccountError {
     #[error("failed to deserialize account code")]
     AccountCodeDeserializationError(#[source] DeserializationError),
-    #[error("account code does not contain procedures but must contain at least one procedure")]
+    #[error("account code does not contain an auth component")]
+    AccountCodeNoAuthComponent,
+    #[error("account code contains multiple auth components")]
+    AccountCodeMultipleAuthComponents,
+    #[error("account code must contain at least one non-auth procedure")]
     AccountCodeNoProcedures,
     #[error("account code contains {0} procedures but it may contain at most {max} procedures", max = AccountCode::MAX_NUM_PROCEDURES)]
     AccountCodeTooManyProcedures(usize),
@@ -91,18 +95,22 @@ pub enum AccountError {
     AccountComponentDuplicateProcedureRoot(Digest),
     #[error("failed to create account component")]
     AccountComponentTemplateInstantiationError(#[source] AccountComponentTemplateError),
+    #[error("account component contains multiple authentication procedures")]
+    AccountComponentMultipleAuthProcedures,
     #[error("failed to update asset vault")]
     AssetVaultUpdateError(#[source] AssetVaultError),
     #[error("account build error: {0}")]
     BuildError(String, #[source] Option<Box<AccountError>>),
     #[error("failed to parse account ID from final account header")]
     FinalAccountHeaderIdParsingFailed(#[source] AccountIdError),
-    #[error("failed to create basic fungible faucet")]
-    FungibleFaucetError(#[source] FungibleFaucetError),
     #[error("account header data has length {actual} but it must be of length {expected}")]
     HeaderDataIncorrectLength { actual: usize, expected: usize },
-    #[error("new account nonce {new} is less than the current nonce {current}")]
-    NonceNotMonotonicallyIncreasing { current: u64, new: u64 },
+    #[error("current account nonce {current} plus increment {increment} overflows a felt to {new}")]
+    NonceOverflow {
+        current: Felt,
+        increment: Felt,
+        new: Felt,
+    },
     #[error(
         "digest of the seed has {actual} trailing zeroes but must have at least {expected} trailing zeroes"
     )]
@@ -136,22 +144,6 @@ pub enum AccountError {
     AssumptionViolated(String),
 }
 
-#[derive(Debug, Error)]
-pub enum FungibleFaucetError {
-    #[error("faucet metadata decimals is {actual} which exceeds max value of {max}")]
-    TooManyDecimals { actual: u64, max: u8 },
-    #[error("faucet metadata max supply is {actual} which exceeds max value of {max}")]
-    MaxSupplyTooLarge { actual: u64, max: u64 },
-    #[error(
-        "account interface provided for faucet creation does not have basic fungible faucet component"
-    )]
-    NoAvailableInterface,
-    #[error("storage offset `{0}` is invalid")]
-    InvalidStorageOffset(u8),
-    #[error("invalid token symbol")]
-    InvalidTokenSymbol(#[source] TokenSymbolError),
-}
-
 // ACCOUNT ID ERROR
 // ================================================================================================
 
@@ -169,15 +161,10 @@ pub enum AccountIdError {
     AccountIdHexParseError(#[source] HexParseError),
     #[error("`{0}` is not a known account ID version")]
     UnknownAccountIdVersion(u8),
-    #[error("anchor epoch in account ID must not be u16::MAX ({})", u16::MAX)]
-    AnchorEpochMustNotBeU16Max,
+    #[error("most significant bit of account ID suffix must be zero")]
+    AccountIdSuffixMostSignificantBitMustBeZero,
     #[error("least significant byte of account ID suffix must be zero")]
     AccountIdSuffixLeastSignificantByteMustBeZero,
-    #[error(
-        "anchor block must be an epoch block, that is, its block number must be a multiple of 2^{}",
-        BlockNumber::EPOCH_LENGTH_EXPONENT
-    )]
-    AnchorBlockMustBeEpochBlock,
     #[error("failed to decode bech32 string into account ID")]
     Bech32DecodeError(#[source] Bech32Error),
 }
@@ -236,6 +223,10 @@ pub enum NetworkIdError {
 
 #[derive(Debug, Error)]
 pub enum AccountDeltaError {
+    #[error(
+        "storage slot index {slot_index} is greater than or equal to the number of slots {num_slots}"
+    )]
+    StorageSlotIndexOutOfBounds { slot_index: u8, num_slots: u8 },
     #[error("storage slot {0} was updated as a value and as a map")]
     StorageSlotUsedAsDifferentTypes(u8),
     #[error("non fungible vault can neither be added nor removed twice")]
@@ -260,8 +251,16 @@ pub enum AccountDeltaError {
         account_id: AccountId,
         source: AccountError,
     },
-    #[error("inconsistent nonce update: {0}")]
-    InconsistentNonceUpdate(String),
+    #[error("zero nonce is not allowed for non-empty account deltas")]
+    ZeroNonceForNonEmptyDelta,
+    #[error(
+        "account nonce increment {current} plus the other nonce increment {increment} overflows a felt to {new}"
+    )]
+    NonceIncrementOverflow {
+        current: Felt,
+        increment: Felt,
+        new: Felt,
+    },
     #[error("account ID {0} in fungible asset delta is not of type fungible faucet")]
     NotAFungibleFaucetId(AccountId),
 }
@@ -383,7 +382,7 @@ pub enum NoteError {
     DuplicateFungibleAsset(AccountId),
     #[error("duplicate non fungible asset {0} in note")]
     DuplicateNonFungibleAsset(NonFungibleAsset),
-    #[error("note type {0:?} is inconsistent with note tag {1}")]
+    #[error("note type {0} is inconsistent with note tag {1}")]
     InconsistentNoteTag(NoteType, u64),
     #[error("adding fungible asset amounts would exceed maximum allowed amount")]
     AddFungibleAssetBalanceError(#[source] AssetError),
@@ -401,31 +400,29 @@ pub enum NoteError {
     NoteExecutionHintAfterBlockCannotBeU32Max,
     #[error("invalid note execution hint payload {1} for tag {0}")]
     InvalidNoteExecutionHintPayload(u8, u32),
-    #[error("note type {0:b} does not match any of the valid note types {public}, {private} or {encrypted}",
-      public = NoteType::Public as u8,
-      private = NoteType::Private as u8,
-      encrypted = NoteType::Encrypted as u8,
+    #[error("note type {0} does not match any of the valid note types {public}, {private} or {encrypted}",
+      public = NoteType::Public,
+      private = NoteType::Private,
+      encrypted = NoteType::Encrypted,
     )]
-    InvalidNoteType(u64),
+    UnknownNoteType(Box<str>),
     #[error("note location index {node_index_in_block} is out of bounds 0..={highest_index}")]
     NoteLocationIndexOutOfBounds {
         node_index_in_block: u16,
         highest_index: usize,
     },
-    #[error("note network execution requires the target to be a network account")]
-    NetworkExecutionRequiresNetworkAccount,
-    #[error("note network execution requires a public note but note is of type {0:?}")]
+    #[error("note network execution requires a public note but note is of type {0}")]
     NetworkExecutionRequiresPublicNote(NoteType),
     #[error("failed to assemble note script:\n{}", PrintDiagnostic::new(.0))]
     NoteScriptAssemblyError(Report),
     #[error("failed to deserialize note script")]
     NoteScriptDeserializationError(#[source] DeserializationError),
-    #[error("public use case requires a public note but note is of type {0:?}")]
-    PublicUseCaseRequiresPublicNote(NoteType),
     #[error("note contains {0} assets which exceeds the maximum of {max}", max = NoteAssets::MAX_NUM_ASSETS)]
     TooManyAssets(usize),
     #[error("note contains {0} inputs which exceeds the maximum of {max}", max = MAX_INPUTS_PER_NOTE)]
     TooManyInputs(usize),
+    #[error("note tag requires a public note but the note is of type {0}")]
+    PublicNoteRequired(NoteType),
 }
 
 // PARTIAL BLOCKCHAIN ERROR
@@ -489,11 +486,6 @@ pub enum TransactionInputError {
     AccountSeedNotProvidedForNewAccount,
     #[error("account seed must not be provided for existing accounts")]
     AccountSeedProvidedForExistingAccount,
-    #[error(
-      "anchor block header for epoch {0} (block number = {block_number}) must be provided in the partial blockchain for the new account",
-      block_number = BlockNumber::from_epoch(*.0),
-    )]
-    AnchorBlockHeaderNotProvidedForNewAccount(u16),
     #[error("transaction input note with nullifier {0} is a duplicate")]
     DuplicateInputNote(Nullifier),
     #[error(
@@ -515,8 +507,6 @@ pub enum TransactionInputError {
     InputNoteNotInBlock(NoteId, BlockNumber),
     #[error("account ID computed from seed is invalid")]
     InvalidAccountIdSeed(#[source] AccountIdError),
-    #[error("merkle path for {0} is invalid")]
-    InvalidMerklePath(Box<str>, #[source] MerkleError),
     #[error(
         "total number of input notes is {0} which exceeds the maximum of {MAX_INPUT_NOTES_PER_TX}"
     )]
@@ -531,7 +521,7 @@ pub enum TransactionOutputError {
     #[error("transaction output note with id {0} is a duplicate")]
     DuplicateOutputNote(NoteId),
     #[error("final account commitment is not in the advice map")]
-    FinalAccountHashMissingInAdviceMap,
+    FinalAccountCommitmentMissingInAdviceMap,
     #[error("failed to parse final account header")]
     FinalAccountHeaderParseFailure(#[source] AccountError),
     #[error(
@@ -544,6 +534,8 @@ pub enum TransactionOutputError {
         "total number of output notes is {0} which exceeds the maximum of {MAX_OUTPUT_NOTES_PER_TX}"
     )]
     TooManyOutputNotes(usize),
+    #[error("failed to process account update commitment: {0}")]
+    AccountUpdateCommitment(Box<str>),
 }
 
 // PROVEN TRANSACTION ERROR
@@ -586,6 +578,8 @@ pub enum ProvenTransactionError {
         account_id: AccountId,
         update_size: usize,
     },
+    #[error("proven transaction neither changed the account state, nor consumed any notes")]
+    EmptyTransaction,
 }
 
 // PROPOSED BATCH ERROR
