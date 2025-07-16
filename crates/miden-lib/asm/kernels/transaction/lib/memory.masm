@@ -603,8 +603,9 @@ end
 #!
 #! Where:
 #! - version is the protocol version of the transaction reference block.
+const.BLOCK_METADATA_VERSION_PTR=BLOCK_METADATA_PTR+1
 export.get_blk_version
-    padw mem_loadw.BLOCK_METADATA_PTR drop drop swap drop
+    mem_load.BLOCK_METADATA_VERSION_PTR
 end
 
 #! Returns the block timestamp of the reference block for this transaction.
@@ -614,8 +615,9 @@ end
 #!
 #! Where:
 #! - timestamp is the timestamp of the reference block for this transaction.
+const.BLOCK_METADATA_TIMESTAMP_PTR=BLOCK_METADATA_PTR+2
 export.get_blk_timestamp
-    padw mem_loadw.BLOCK_METADATA_PTR drop movdn.2 drop drop
+    mem_load.BLOCK_METADATA_TIMESTAMP_PTR
 end
 
 #! Returns the chain commitment of the transaction reference block.
@@ -957,11 +959,10 @@ end
 #!
 #! Where:
 #! - acct_nonce is the account nonce.
+const.ACCT_NONCE_PTR=ACCT_ID_AND_NONCE_OFFSET+3
 export.get_acct_nonce
-    padw
-    exec.get_current_account_data_ptr push.ACCT_ID_AND_NONCE_OFFSET add
-    mem_loadw
-    movdn.3 drop drop drop
+    exec.get_current_account_data_ptr add.ACCT_NONCE_PTR
+    mem_load
 end
 
 #! Sets the account nonce.
