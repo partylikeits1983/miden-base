@@ -1,14 +1,13 @@
 use anyhow::Context;
-use miden_lib::{
-    note::{create_swap_note, utils},
-    transaction::TransactionKernel,
-};
+use miden_lib::{note::utils, transaction::TransactionKernel};
 use miden_objects::{
-    Felt, NoteError, Word, ZERO,
-    account::AccountId,
-    asset::{Asset, NonFungibleAsset},
-    crypto::rand::RpoRandomCoin,
+    Felt, NoteError, Word,
+    account::{Account, AccountId, AccountStorageMode, AccountType},
+    asset::{Asset, FungibleAsset, NonFungibleAsset},
     note::{Note, NoteAssets, NoteDetails, NoteExecutionHint, NoteMetadata, NoteTag, NoteType},
+    testing::account_id::{
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1, AccountIdBuilder,
+    },
     transaction::{OutputNote, TransactionScript},
 };
 use miden_testing::{Auth, MockChain};
@@ -16,20 +15,17 @@ use miden_tx::utils::word_to_masm_push_string;
 
 use crate::prove_and_verify_transaction;
 
-// Creates a swap note and sends it with send_asset
+/// Creates a SWAP note from the transaction script and proves and verifies the transaction.
 #[test]
 pub fn prove_send_swap_note() -> anyhow::Result<()> {
-    let mut mock_chain = MockChain::new();
-    let offered_asset = mock_chain
-        .add_pending_new_faucet(Auth::BasicAuth, "USDT", 100000u64)
-        .context("failed to add pending new faucet")?
-        .mint(2000);
-    let requested_asset = NonFungibleAsset::mock(&[1, 2, 3, 4]);
-    let sender_account =
-        mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![offered_asset]);
-
-    let (note, _payback) =
-        get_swap_notes(sender_account.id(), offered_asset, requested_asset, NoteType::Public);
+    let payback_note_type = NoteType::Private;
+    let SwapTestSetup {
+        mock_chain,
+        mut sender_account,
+        offered_asset,
+        swap_note,
+        ..
+    } = setup_swap_test(payback_note_type)?;
 
     // CREATE SWAP NOTE TX
     // --------------------------------------------------------------------------------------------
@@ -47,15 +43,14 @@ pub fn prove_send_swap_note() -> anyhow::Result<()> {
 
             push.{asset}
             call.::miden::contracts::wallets::basic::move_asset_to_note
-            call.::miden::contracts::auth::basic::auth__tx_rpo_falcon512
             dropw dropw dropw dropw
         end
         ",
-        recipient = word_to_masm_push_string(&note.recipient().digest()),
+        recipient = word_to_masm_push_string(&swap_note.recipient().digest()),
         note_type = NoteType::Public as u8,
-        tag = Felt::from(note.metadata().tag()),
+        tag = Felt::from(swap_note.metadata().tag()),
         asset = word_to_masm_push_string(&offered_asset.into()),
-        note_execution_hint = Felt::from(note.metadata().execution_hint())
+        note_execution_hint = Felt::from(swap_note.metadata().execution_hint())
     );
 
     let tx_script = TransactionScript::compile(
@@ -68,61 +63,62 @@ pub fn prove_send_swap_note() -> anyhow::Result<()> {
         .build_tx_context(sender_account.id(), &[], &[])
         .context("failed to build tx context")?
         .tx_script(tx_script)
-        .extend_expected_output_notes(vec![OutputNote::Full(note.clone())])
+        .extend_expected_output_notes(vec![OutputNote::Full(swap_note.clone())])
         .build()?
         .execute()?;
 
-    let sender_account = mock_chain
-        .add_pending_executed_transaction(&create_swap_note_tx)
-        .context("failed to add pending executed transaction")?;
+    sender_account
+        .apply_delta(create_swap_note_tx.account_delta())
+        .context("failed to apply delta")?;
 
     assert!(
         create_swap_note_tx
             .output_notes()
             .iter()
-            .any(|n| n.commitment() == note.commitment())
+            .any(|n| n.commitment() == swap_note.commitment())
     );
-    assert_eq!(sender_account.vault().assets().count(), 0); // Offered asset should be gone
+    assert_eq!(
+        sender_account.vault().assets().count(),
+        0,
+        "offered asset should no longer be present in vault"
+    );
+
     let swap_output_note = create_swap_note_tx.output_notes().iter().next().unwrap();
     assert_eq!(swap_output_note.assets().unwrap().iter().next().unwrap(), &offered_asset);
     assert!(prove_and_verify_transaction(create_swap_note_tx).is_ok());
+
     Ok(())
 }
 
-// Creates a swap note with a private payback note, then consumes it to complete the swap
-// The target account receives the offered asset and creates a private payback note for the sender
+/// Creates a SWAP note in the mock chain with a private payback note and consumes it, creating the
+/// payback note. The payback note is consumed by the original sender of the SWAP note.
+///
+/// Both transactions are proven and verified.
 #[test]
 fn consume_swap_note_private_payback_note() -> anyhow::Result<()> {
-    let mut mock_chain = MockChain::new();
-    let offered_asset = mock_chain
-        .add_pending_new_faucet(Auth::BasicAuth, "USDT", 100000u64)
-        .context("failed to add pending new faucet")?
-        .mint(2000);
-    let requested_asset = NonFungibleAsset::mock(&[1, 2, 3, 4]);
-    let sender_account =
-        mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![offered_asset]);
-
     let payback_note_type = NoteType::Private;
-    let (note, payback_note) =
-        get_swap_notes(sender_account.id(), offered_asset, requested_asset, payback_note_type);
+    let SwapTestSetup {
+        mock_chain,
+        mut sender_account,
+        mut target_account,
+        offered_asset,
+        requested_asset,
+        swap_note,
+        payback_note,
+    } = setup_swap_test(payback_note_type)?;
 
     // CONSUME CREATED NOTE
     // --------------------------------------------------------------------------------------------
 
-    let target_account =
-        mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![requested_asset]);
-    mock_chain.add_pending_note(OutputNote::Full(note.clone()));
-    mock_chain.prove_next_block().unwrap();
-
     let consume_swap_note_tx = mock_chain
-        .build_tx_context(target_account.id(), &[note.id()], &[])
+        .build_tx_context(target_account.id(), &[swap_note.id()], &[])
         .context("failed to build tx context")?
         .build()?
         .execute()?;
 
-    let target_account = mock_chain
-        .add_pending_executed_transaction(&consume_swap_note_tx)
-        .context("failed to add pending executed transaction")?;
+    target_account
+        .apply_delta(consume_swap_note_tx.account_delta())
+        .context("failed to apply delta to target account")?;
 
     let output_payback_note = consume_swap_note_tx.output_notes().iter().next().unwrap().clone();
     assert!(output_payback_note.id() == payback_note.id());
@@ -130,7 +126,7 @@ fn consume_swap_note_private_payback_note() -> anyhow::Result<()> {
 
     assert!(target_account.vault().assets().count() == 1);
     assert!(target_account.vault().assets().any(|asset| asset == offered_asset));
-    assert!(prove_and_verify_transaction(consume_swap_note_tx).is_ok());
+
     // CONSUME PAYBACK P2ID NOTE
     // --------------------------------------------------------------------------------------------
 
@@ -146,11 +142,18 @@ fn consume_swap_note_private_payback_note() -> anyhow::Result<()> {
         .build()?
         .execute()?;
 
-    let sender_account = mock_chain
-        .add_pending_executed_transaction(&consume_payback_tx)
-        .context("failed to add pending executed transaction")?;
+    sender_account
+        .apply_delta(consume_payback_tx.account_delta())
+        .context("failed to apply delta to sender account")?;
+
     assert!(sender_account.vault().assets().any(|asset| asset == requested_asset));
-    assert!(prove_and_verify_transaction(consume_payback_tx).is_ok());
+
+    prove_and_verify_transaction(consume_swap_note_tx)
+        .context("failed to prove/verify consume_swap_note_tx")?;
+
+    prove_and_verify_transaction(consume_payback_tx)
+        .context("failed to prove/verify consume_payback_tx")?;
+
     Ok(())
 }
 
@@ -158,26 +161,19 @@ fn consume_swap_note_private_payback_note() -> anyhow::Result<()> {
 // The target account receives the offered asset and creates a public payback note for the sender
 #[test]
 fn consume_swap_note_public_payback_note() -> anyhow::Result<()> {
-    let mut mock_chain = MockChain::new();
-    let offered_asset = mock_chain
-        .add_pending_new_faucet(Auth::BasicAuth, "USDT", 100000u64)
-        .context("failed to add pending new faucet")?
-        .mint(2000);
-    let requested_asset = NonFungibleAsset::mock(&[1, 2, 3, 4]);
-    let sender_account =
-        mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![offered_asset]);
-
     let payback_note_type = NoteType::Public;
-    let (note, payback_note) =
-        get_swap_notes(sender_account.id(), offered_asset, requested_asset, payback_note_type);
+    let SwapTestSetup {
+        mock_chain,
+        mut sender_account,
+        mut target_account,
+        offered_asset,
+        requested_asset,
+        swap_note,
+        payback_note,
+    } = setup_swap_test(payback_note_type)?;
 
     // CONSUME CREATED NOTE
     // --------------------------------------------------------------------------------------------
-
-    let target_account =
-        mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![requested_asset]);
-    mock_chain.add_pending_note(OutputNote::Full(note.clone()));
-    mock_chain.prove_next_block().unwrap();
 
     // When consuming a SWAP note with a public payback note output
     // it is necessary to add the details of the public note to the advice provider
@@ -193,15 +189,13 @@ fn consume_swap_note_public_payback_note() -> anyhow::Result<()> {
     .unwrap();
 
     let consume_swap_note_tx = mock_chain
-        .build_tx_context(target_account.id(), &[note.id()], &[])
+        .build_tx_context(target_account.id(), &[swap_note.id()], &[])
         .context("failed to build tx context")?
         .extend_expected_output_notes(vec![OutputNote::Full(payback_p2id_note)])
         .build()?
         .execute()?;
 
-    let target_account = mock_chain
-        .add_pending_executed_transaction(&consume_swap_note_tx)
-        .context("failed to add pending executed transaction")?;
+    target_account.apply_delta(consume_swap_note_tx.account_delta())?;
 
     let output_payback_note = consume_swap_note_tx.output_notes().iter().next().unwrap().clone();
     assert!(output_payback_note.id() == payback_note.id());
@@ -225,9 +219,8 @@ fn consume_swap_note_public_payback_note() -> anyhow::Result<()> {
         .build()?
         .execute()?;
 
-    let sender_account = mock_chain
-        .add_pending_executed_transaction(&consume_payback_tx)
-        .context("failed to add pending executed transaction")?;
+    sender_account.apply_delta(consume_payback_tx.account_delta())?;
+
     assert!(sender_account.vault().assets().any(|asset| asset == requested_asset));
     Ok(())
 }
@@ -236,53 +229,43 @@ fn consume_swap_note_public_payback_note() -> anyhow::Result<()> {
 /// note offering asset B and requesting asset A.
 #[test]
 fn settle_coincidence_of_wants() -> anyhow::Result<()> {
-    let mut mock_chain = MockChain::new();
-
     // Create two different assets for the swap
-    let asset_a = mock_chain
-        .add_pending_new_faucet(Auth::BasicAuth, "USDT", 100000u64)
-        .context("failed to add pending new faucet")?
-        .mint(10_000);
-    let asset_b = mock_chain
-        .add_pending_new_faucet(Auth::BasicAuth, "ETH", 100000u64)
-        .context("failed to add pending new faucet")?
-        .mint(1);
+    let faucet0 = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET)?;
+    let faucet1 = AccountId::try_from(ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1)?;
+    let asset_a = FungibleAsset::new(faucet0, 10_000)?.into();
+    let asset_b = FungibleAsset::new(faucet1, 10)?.into();
+
+    let mut builder = MockChain::builder();
 
     // CREATE ACCOUNT 1: Has asset A, wants asset B
     // --------------------------------------------------------------------------------------------
-    let account_1 = mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![asset_a]);
+    let account_1 = builder.add_existing_wallet_with_assets(Auth::BasicAuth, vec![asset_a])?;
 
     let payback_note_type = NoteType::Private;
     let (swap_note_1, payback_note_1) =
-        get_swap_notes(account_1.id(), asset_a, asset_b, payback_note_type);
+        builder.add_swap_note(account_1.id(), asset_a, asset_b, payback_note_type)?;
 
     // CREATE ACCOUNT 2: Has asset B, wants asset A
     // --------------------------------------------------------------------------------------------
-    let account_2 = mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![asset_b]);
+    let account_2 = builder.add_existing_wallet_with_assets(Auth::BasicAuth, vec![asset_b])?;
 
     let (swap_note_2, payback_note_2) =
-        get_swap_notes(account_2.id(), asset_b, asset_a, payback_note_type);
+        builder.add_swap_note(account_2.id(), asset_b, asset_a, payback_note_type)?;
 
-    // Add both swap notes to the chain
-    mock_chain.add_pending_note(OutputNote::Full(swap_note_1.clone()));
-    mock_chain.add_pending_note(OutputNote::Full(swap_note_2.clone()));
-    mock_chain.prove_next_block().unwrap();
-
-    // CREATE MATCHING ACCOUNT: Has both assets and will fulfill both swaps
+    // MATCHER ACCOUNT: Has both assets and will fulfill both swaps
     // --------------------------------------------------------------------------------------------
 
-    // # TODO: matching account should be able to fill both SWAP notes without holding assets A & B
-    let matching_account =
-        mock_chain.add_pending_existing_wallet(Auth::BasicAuth, vec![asset_a, asset_b]);
-
-    // Store initial matching account balance for verification
-    let initial_matching_balance = matching_account.vault().assets().count();
-    assert_eq!(initial_matching_balance, 2); // Should start with both assets
+    // TODO: matcher account should be able to fill both SWAP notes without holding assets A & B
+    let matcher_account =
+        builder.add_existing_wallet_with_assets(Auth::BasicAuth, vec![asset_a, asset_b])?;
+    // Initial matching account balance should have two assets.
+    assert_eq!(matcher_account.vault().assets().count(), 2);
 
     // EXECUTE SINGLE TRANSACTION TO CONSUME BOTH SWAP NOTES
     // --------------------------------------------------------------------------------------------
+    let mock_chain = builder.build()?;
     let settle_tx = mock_chain
-        .build_tx_context(matching_account.id(), &[swap_note_1.id(), swap_note_2.id()], &[])
+        .build_tx_context(matcher_account.id(), &[swap_note_1.id(), swap_note_2.id()], &[])
         .context("failed to build tx context")?
         .build()?
         .execute()?;
@@ -311,24 +294,47 @@ fn settle_coincidence_of_wants() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn get_swap_notes(
-    sender_account_id: AccountId,
+struct SwapTestSetup {
+    mock_chain: MockChain,
+    sender_account: Account,
+    target_account: Account,
     offered_asset: Asset,
     requested_asset: Asset,
-    payback_note_type: NoteType,
-) -> (Note, NoteDetails) {
-    // Create the note containing the SWAP script
-    create_swap_note(
-        sender_account_id,
+    swap_note: Note,
+    payback_note: NoteDetails,
+}
+
+fn setup_swap_test(payback_note_type: NoteType) -> anyhow::Result<SwapTestSetup> {
+    let faucet_id = AccountIdBuilder::new()
+        .account_type(AccountType::FungibleFaucet)
+        .storage_mode(AccountStorageMode::Private)
+        .build_with_seed([5; 32]);
+
+    let offered_asset = FungibleAsset::new(faucet_id, 2000)?.into();
+    let requested_asset = NonFungibleAsset::mock(&[1, 2, 3, 4]);
+
+    let mut builder = MockChain::builder();
+    let sender_account =
+        builder.add_existing_wallet_with_assets(Auth::BasicAuth, vec![offered_asset])?;
+    let target_account =
+        builder.add_existing_wallet_with_assets(Auth::BasicAuth, vec![requested_asset])?;
+
+    let (swap_note, payback_note) = builder
+        .add_swap_note(sender_account.id(), offered_asset, requested_asset, payback_note_type)
+        .unwrap();
+
+    builder.add_note(OutputNote::Full(swap_note.clone()));
+    let mock_chain = builder.build()?;
+
+    Ok(SwapTestSetup {
+        mock_chain,
+        sender_account,
+        target_account,
         offered_asset,
         requested_asset,
-        NoteType::Public,
-        ZERO,
-        payback_note_type,
-        ZERO,
-        &mut RpoRandomCoin::new(Word::from([1, 2, 3, 4u32])),
-    )
-    .unwrap()
+        swap_note,
+        payback_note,
+    })
 }
 
 /// Generates a P2ID note - Pay-to-ID note with an exact serial number
