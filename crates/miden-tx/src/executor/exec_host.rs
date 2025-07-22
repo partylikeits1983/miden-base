@@ -114,7 +114,7 @@ where
         {
             signature.to_vec()
         } else {
-            let account_delta = self.base_host.account_delta_tracker().clone().into_delta();
+            let account_delta = self.base_host.build_account_delta();
 
             let authenticator =
                 self.authenticator.ok_or(TransactionKernelError::MissingAuthenticator)?;
