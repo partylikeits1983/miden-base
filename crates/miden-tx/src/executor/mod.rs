@@ -20,7 +20,7 @@ use winter_maybe_async::{maybe_async, maybe_await};
 use super::TransactionExecutorError;
 use crate::{
     auth::TransactionAuthenticator,
-    host::{AccountProcedureIndexMap, ScriptMastForestStore},
+    host::{AccountProcedureIndexMap, ScriptMastForestStore, TransactionBaseHost},
 };
 
 mod exec_host;
@@ -195,7 +195,7 @@ where
             self.exec_options,
             source_manager,
         )
-        .map_err(|err| map_execution_error(err, &tx_inputs, &host))?;
+        .map_err(|err| map_execution_error(err, host.base_host()))?;
         let (stack_outputs, advice_provider) = trace.into_outputs();
 
         // The stack is not necessary since it is being reconstructed when re-executing.
@@ -511,10 +511,9 @@ fn validate_num_cycles(num_cycles: u32) -> Result<(), TransactionExecutorError> 
 ///   account delta and input/output notes.
 /// - Otherwise, the execution error is wrapped in
 ///   [`TransactionExecutorError::TransactionProgramExecutionFailed`].
-fn map_execution_error<STORE: DataStore, AUTH: TransactionAuthenticator>(
+fn map_execution_error<STORE: DataStore>(
     exec_err: ExecutionError,
-    tx_inputs: &TransactionInputs,
-    host: &TransactionExecutorHost<STORE, AUTH>,
+    host: &TransactionBaseHost<STORE>,
 ) -> TransactionExecutorError {
     match exec_err {
         ExecutionError::EventError { ref error, .. } => {
@@ -527,12 +526,11 @@ fn map_execution_error<STORE: DataStore, AUTH: TransactionAuthenticator>(
                     salt,
                 }) => {
                     let tx_summary = match build_tx_summary(
-                        *account_delta_commitment,
-                        *input_notes_commitment,
-                        *output_notes_commitment,
-                        *salt,
-                        tx_inputs,
                         host,
+                        *salt,
+                        *output_notes_commitment,
+                        *input_notes_commitment,
+                        *account_delta_commitment,
                     ) {
                         Ok(tx_summary) => tx_summary,
                         Err(err) => return err,
@@ -550,17 +548,16 @@ fn map_execution_error<STORE: DataStore, AUTH: TransactionAuthenticator>(
 
 /// Builds a [`TransactionSummary`] by extracting the account delta and input/output notes from the
 /// host and validating them against the provided commitments.
-fn build_tx_summary<STORE: DataStore, AUTH: TransactionAuthenticator>(
-    account_delta_commitment: Word,
-    input_notes_commitment: Word,
-    output_notes_commitment: Word,
+fn build_tx_summary<STORE: MastForestStore>(
+    host: &TransactionBaseHost<STORE>,
     salt: Word,
-    tx_inputs: &TransactionInputs,
-    host: &TransactionExecutorHost<STORE, AUTH>,
+    output_notes_commitment: Word,
+    input_notes_commitment: Word,
+    account_delta_commitment: Word,
 ) -> Result<TransactionSummary, TransactionExecutorError> {
-    let account_delta = host.base_host().build_account_delta();
-    let input_notes = tx_inputs.input_notes().clone();
-    let output_notes = host.base_host().build_output_notes();
+    let account_delta = host.build_account_delta();
+    let input_notes = host.input_notes();
+    let output_notes = host.build_output_notes();
     let output_notes = OutputNotes::new(output_notes)
         .map_err(TransactionExecutorError::TransactionOutputConstructionFailed)?;
 

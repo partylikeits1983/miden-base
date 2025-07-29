@@ -279,6 +279,7 @@ where
     ) -> Result<(), TransactionKernelError> {
         let pub_key = process.get_stack_word(0);
         let msg = process.get_stack_word(1);
+
         let signature_key = Hasher::merge(&[pub_key, msg]);
 
         let signature = process
