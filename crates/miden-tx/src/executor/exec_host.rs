@@ -83,14 +83,16 @@ where
         self.base_host.tx_progress()
     }
 
-    // ADVICE INJECTOR HANDLERS
+    // EVENT HANDLERS
     // --------------------------------------------------------------------------------------------
 
     /// Pushes a signature to the advice stack as a response to the `AuthRequest` event.
     ///
-    /// The signature is fetched from the advice map or otherwise requested from the host's
-    /// authenticator.
-    pub fn on_signature_requested(
+    /// Expected stack state: `[MESSAGE, PUB_KEY]`
+    ///
+    /// The signature is fetched from the advice map using `hash(PUB_KEY, MESSAGE)` as the key. If
+    /// not present in the advice map, the signature is requested from the host's authenticator.
+    pub fn on_auth_requested(
         &mut self,
         process: &mut ProcessState,
     ) -> Result<(), TransactionKernelError> {
@@ -174,7 +176,7 @@ where
             // Override the base host's on signature requested implementation, which would not call
             // the authenticator.
             TransactionEvent::AuthRequest => {
-                self.on_signature_requested(process)
+                self.on_auth_requested(process)
                     .map_err(|err| ExecutionError::event_error(Box::new(err), err_ctx))?;
             },
             // All other events are handled as in the base host.

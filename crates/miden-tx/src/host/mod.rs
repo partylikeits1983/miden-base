@@ -205,7 +205,7 @@ where
             TransactionEvent::NoteBeforeAddAsset => self.on_note_before_add_asset(process),
             TransactionEvent::NoteAfterAddAsset => Ok(()),
 
-            TransactionEvent::AuthRequest => self.on_signature_requested(process),
+            TransactionEvent::AuthRequest => self.on_auth_requested(process),
 
             TransactionEvent::PrologueStart => {
                 self.tx_progress.start_prologue(process.clk());
@@ -274,8 +274,11 @@ where
 
     /// Pushes a signature to the advice stack as a response to the `AuthRequest` event.
     ///
-    /// The signature is fetched from the advice map and if it is not present, an error is returned.
-    pub fn on_signature_requested(
+    /// Expected stack state: `[MESSAGE, PUB_KEY]`
+    ///
+    /// The signature is fetched from the advice map using `hash(PUB_KEY, MESSAGE)` as the key. If
+    /// the signature not present in the advice map, an error is returned.
+    pub fn on_auth_requested(
         &mut self,
         process: &mut ProcessState,
     ) -> Result<(), TransactionKernelError> {
@@ -293,6 +296,38 @@ where
         process.advice_provider_mut().stack.extend(signature);
 
         Ok(())
+    }
+
+    /// Aborts the transaction by building the
+    /// [`TransactionSummary`](miden_objects::transaction::TransactionSummary) based on elements on
+    /// the operand stack and advice map.
+    ///
+    /// Expected stack state:
+    ///
+    /// ```text
+    /// [MESSAGE]
+    /// ```
+    ///
+    /// Expected advice map state:
+    ///
+    /// ```text
+    /// MESSAGE -> [SALT, OUTPUT_NOTES_COMMITMENT, INPUT_NOTES_COMMITMENT, ACCOUNT_DELTA_COMMITMENT]
+    /// ```
+    fn on_unauthorized(&self, process: &mut ProcessState) -> TransactionKernelError {
+        let msg = process.get_stack_word(0);
+
+        let tx_summary = match self.build_tx_summary(process, msg) {
+            Ok(s) => s,
+            Err(err) => return err,
+        };
+
+        if msg != tx_summary.to_commitment() {
+            return TransactionKernelError::TransactionSummaryConstructionFailed(
+                "transaction summary doesn't commit to the expected message".into(),
+            );
+        }
+
+        TransactionKernelError::Unauthorized(Box::new(tx_summary))
     }
 
     /// Creates a new [OutputNoteBuilder] from the data on the operand stack and stores it into the
@@ -519,38 +554,6 @@ where
             .remove_asset(asset)
             .map_err(TransactionKernelError::AccountDeltaRemoveAssetFailed)?;
         Ok(())
-    }
-
-    /// Aborts the transaction by building the
-    /// [`TransactionSummary`](miden_objects::transaction::TransactionSummary) based on elements on
-    /// the operand stack and advice map.
-    ///
-    /// Expected stack state:
-    ///
-    /// ```text
-    /// [MESSAGE]
-    /// ```
-    ///
-    /// Expected advice map state:
-    ///
-    /// ```text
-    /// MESSAGE -> [SALT, OUTPUT_NOTES_COMMITMENT, INPUT_NOTES_COMMITMENT, ACCOUNT_DELTA_COMMITMENT]
-    /// ```
-    fn on_unauthorized(&self, process: &mut ProcessState) -> TransactionKernelError {
-        let msg = process.get_stack_word(0);
-
-        let tx_summary = match self.build_tx_summary(process, msg) {
-            Ok(s) => s,
-            Err(err) => return err,
-        };
-
-        if msg != tx_summary.to_commitment() {
-            return TransactionKernelError::TransactionSummaryConstructionFailed(
-                "transaction summary doesn't commit to the expected message".into(),
-            );
-        }
-
-        TransactionKernelError::Unauthorized(Box::new(tx_summary))
     }
 
     // HELPER FUNCTIONS
