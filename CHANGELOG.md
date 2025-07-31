@@ -16,6 +16,7 @@
 ### Changes
 
 - [BREAKING] Incremented MSRV to 1.88.
+- Refactor account documentation into multiple sections ([#1523](https://github.com/0xMiden/miden-base/pull/1523)).
 - Implemented `WellKnownComponents` enum ([#1532](https://github.com/0xMiden/miden-base/pull/1532)).
 - Made `ExecutedTransaction` implement `Send` for easier consumption ([#1560](https://github.com/0xMiden/miden-base/pull/1560)).
 - [BREAKING] `Digest` was removed in favor of `Word` ([#1564](https://github.com/0xMiden/miden-base/pull/1564)).
