@@ -242,6 +242,20 @@ proc.compute_fee
     # => [verification_cost]
 end
 
+#! Builds the fee asset with the provided fee amount and the native asset ID of the transaction's
+#! reference block as the faucet ID.
+#!
+#! Inputs:  [fee_amount]
+#! Outputs: [FEE_ASSET]
+proc.build_native_fee_asset
+    exec.memory::get_native_asset_id
+    # => [native_asset_id_prefix, native_asset_id_suffix, fee_amount]
+
+    push.0 movdn.2
+    # => [native_asset_id_prefix, native_asset_id_suffix, 0, fee_amount]
+    # => [FEE_ASSET]
+end
+
 # TRANSACTION EPILOGUE PROCEDURE
 # =================================================================================================
 
@@ -254,12 +268,13 @@ end
 #! - asserts that the input and output vault roots are equal.
 #!
 #! Inputs:  []
-#! Outputs: [OUTPUT_NOTES_COMMITMENT, ACCOUNT_UPDATE_COMMITMENT, tx_expiration_block_num]
+#! Outputs: [OUTPUT_NOTES_COMMITMENT, ACCOUNT_UPDATE_COMMITMENT, FEE_ASSET, tx_expiration_block_num]
 #!
 #! Where:
 #! - OUTPUT_NOTES_COMMITMENT is the commitment of the output notes.
 #! - ACCOUNT_UPDATE_COMMITMENT is the hash of the the final account commitment and account
 #!   delta commitment.
+#! - FEE_ASSET is the fungible asset used as the transaction fee.
 #! - tx_expiration_block_num is the transaction expiration block number.
 export.finalize_transaction
     # make sure that the context was switched back to the native account
@@ -362,4 +377,9 @@ export.finalize_transaction
 
     exec.memory::get_expiration_block_num movdn.8
     # => [OUTPUT_NOTES_COMMITMENT, ACCOUNT_UPDATE_COMMITMENT, tx_expiration_block_num]
+
+    # TODO: output proper fee asset
+    # For now, output dummy fee asset
+    push.0 exec.build_native_fee_asset movdnw.2
+    # => [OUTPUT_NOTES_COMMITMENT, ACCOUNT_UPDATE_COMMITMENT, FEE_ASSET, tx_expiration_block_num]
 end

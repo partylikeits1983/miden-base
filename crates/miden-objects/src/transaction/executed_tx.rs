@@ -6,6 +6,7 @@ use super::{
     TransactionOutputs, TransactionWitness,
 };
 use crate::{
+    asset::FungibleAsset,
     block::BlockNumber,
     utils::serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
@@ -104,6 +105,11 @@ impl ExecutedTransaction {
     /// Returns the notes created in this transaction.
     pub fn output_notes(&self) -> &OutputNotes {
         &self.tx_outputs.output_notes
+    }
+
+    /// Returns the fee of the transaction.
+    pub fn fee(&self) -> FungibleAsset {
+        self.tx_outputs.fee
     }
 
     /// Returns the block number at which the transaction will expire.
