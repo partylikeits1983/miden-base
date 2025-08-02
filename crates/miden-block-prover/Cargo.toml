@@ -1,6 +1,6 @@
 [package]
 name = "miden-block-prover"
-version = "0.10.0"
+version = "0.10.1"
 description = "Miden blockchain block executor and prover"
 readme = "README.md"
 categories = ["cryptography"]
