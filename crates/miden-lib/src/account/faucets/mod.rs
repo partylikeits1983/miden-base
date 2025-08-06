@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use super::AuthScheme;
 use super::interface::{AccountComponentInterface, AccountInterface};
-use crate::account::auth::{AuthRpoFalcon512Acl, AuthRpoFalcon512AclConfig};
+use crate::account::auth::{AuthRpoFalcon512Acl, AuthRpoFalcon512AclConfig, NoAuth};
 use crate::account::components::basic_fungible_faucet_library;
 use crate::transaction::memory::FAUCET_STORAGE_DATA_SLOT;
 
@@ -278,14 +278,16 @@ pub fn create_basic_fungible_faucet(
 ) -> Result<(Account, Word), FungibleFaucetError> {
     let distribute_proc_root = BasicFungibleFaucet::distribute_digest();
 
-    let auth_component: AuthRpoFalcon512Acl = match auth_scheme {
+    let auth_component: AccountComponent = match auth_scheme {
         AuthScheme::RpoFalcon512 { pub_key } => AuthRpoFalcon512Acl::new(
             pub_key,
             AuthRpoFalcon512AclConfig::new()
                 .with_auth_trigger_procedures(vec![distribute_proc_root])
                 .with_allow_unauthorized_input_notes(true),
         )
-        .map_err(FungibleFaucetError::AccountError)?,
+        .map_err(FungibleFaucetError::AccountError)?
+        .into(),
+        AuthScheme::NoAuth => NoAuth::new().into(),
     };
 
     let (account, account_seed) = AccountBuilder::new(init_seed)

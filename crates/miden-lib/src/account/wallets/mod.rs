@@ -12,7 +12,7 @@ use miden_objects::utils::sync::LazyLock;
 use miden_objects::{AccountError, Word};
 
 use super::AuthScheme;
-use crate::account::auth::AuthRpoFalcon512;
+use crate::account::auth::{AuthRpoFalcon512, NoAuth};
 use crate::account::components::basic_wallet_library;
 
 // BASIC WALLET
@@ -110,8 +110,9 @@ pub fn create_basic_wallet(
         ));
     }
 
-    let auth_component: AuthRpoFalcon512 = match auth_scheme {
-        AuthScheme::RpoFalcon512 { pub_key } => AuthRpoFalcon512::new(pub_key),
+    let auth_component: AccountComponent = match auth_scheme {
+        AuthScheme::RpoFalcon512 { pub_key } => AuthRpoFalcon512::new(pub_key).into(),
+        AuthScheme::NoAuth => NoAuth::new().into(),
     };
 
     let (account, account_seed) = AccountBuilder::new(init_seed)
