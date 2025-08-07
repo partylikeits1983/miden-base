@@ -213,10 +213,10 @@ impl From<AuthRpoFalcon512Acl> for AccountComponent {
 
 /// An [`AccountComponent`] implementing a no-authentication scheme.
 ///
-/// This component provides **no authentication**! If only checks if the account
+/// This component provides **no authentication**! It only checks if the account
 /// state has actually changed during transaction execution by comparing the initial
 /// account commitment with the current commitment and increments the nonce if
-/// they differ. That avoids unnecessary nonce increments for transactions that don't
+/// they differ. This avoids unnecessary nonce increments for transactions that don't
 /// modify the account state.
 ///
 /// It exports the procedure `auth__no_auth`, which:

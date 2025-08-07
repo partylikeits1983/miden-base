@@ -112,7 +112,11 @@ pub fn create_basic_wallet(
 
     let auth_component: AccountComponent = match auth_scheme {
         AuthScheme::RpoFalcon512 { pub_key } => AuthRpoFalcon512::new(pub_key).into(),
-        AuthScheme::NoAuth => NoAuth::new().into(),
+        AuthScheme::NoAuth => {
+            return Err(AccountError::AssumptionViolated(
+                "basic wallets cannot be created with NoAuth authentication scheme".into(),
+            ));
+        },
     };
 
     let (account, account_seed) = AccountBuilder::new(init_seed)

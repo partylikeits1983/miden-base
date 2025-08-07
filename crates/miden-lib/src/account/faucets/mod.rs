@@ -287,7 +287,11 @@ pub fn create_basic_fungible_faucet(
         )
         .map_err(FungibleFaucetError::AccountError)?
         .into(),
-        AuthScheme::NoAuth => NoAuth::new().into(),
+        AuthScheme::NoAuth => {
+            return Err(FungibleFaucetError::AccountError(AccountError::AssumptionViolated(
+                "basic fungible faucets cannot be created with NoAuth authentication scheme".into(),
+            )));
+        },
     };
 
     let (account, account_seed) = AccountBuilder::new(init_seed)
