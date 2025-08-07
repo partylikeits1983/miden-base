@@ -153,14 +153,7 @@ mod tests {
     use miden_objects::{ONE, Word};
     use vm_processor::utils::{Deserializable, Serializable};
 
-    use super::{
-        Account,
-        AccountStorageMode,
-        AccountType,
-        AuthScheme,
-        BasicWalletError,
-        create_basic_wallet,
-    };
+    use super::{Account, AccountStorageMode, AccountType, AuthScheme, create_basic_wallet};
     use crate::account::wallets::BasicWallet;
 
     #[test]
