@@ -12,7 +12,7 @@ use miden_objects::utils::sync::LazyLock;
 use miden_objects::{AccountError, Word};
 
 use super::AuthScheme;
-use crate::account::auth::{AuthRpoFalcon512, NoAuth};
+use crate::account::auth::AuthRpoFalcon512;
 use crate::account::components::basic_wallet_library;
 
 // BASIC WALLET

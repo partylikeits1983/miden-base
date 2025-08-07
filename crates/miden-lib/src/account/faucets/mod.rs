@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use super::AuthScheme;
 use super::interface::{AccountComponentInterface, AccountInterface};
-use crate::account::auth::{AuthRpoFalcon512Acl, AuthRpoFalcon512AclConfig, NoAuth};
+use crate::account::auth::{AuthRpoFalcon512Acl, AuthRpoFalcon512AclConfig};
 use crate::account::components::basic_fungible_faucet_library;
 use crate::transaction::memory::FAUCET_STORAGE_DATA_SLOT;
 
