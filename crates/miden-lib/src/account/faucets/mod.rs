@@ -1,3 +1,5 @@
+use alloc::string::String;
+
 use miden_objects::account::{
     Account,
     AccountBuilder,
@@ -288,9 +290,9 @@ pub fn create_basic_fungible_faucet(
         .map_err(FungibleFaucetError::AccountError)?
         .into(),
         AuthScheme::NoAuth => {
-            return Err(FungibleFaucetError::AccountError(AccountError::AssumptionViolated(
+            return Err(FungibleFaucetError::UnsupportedAuthScheme(
                 "basic fungible faucets cannot be created with NoAuth authentication scheme".into(),
-            )));
+            ));
         },
     };
 
@@ -323,6 +325,8 @@ pub enum FungibleFaucetError {
     InvalidStorageOffset(u8),
     #[error("invalid token symbol")]
     InvalidTokenSymbol(#[source] TokenSymbolError),
+    #[error("unsupported authentication scheme: {0}")]
+    UnsupportedAuthScheme(String),
     #[error("account creation failed")]
     AccountError(#[source] AccountError),
     #[error("account is not a fungible faucet account")]
