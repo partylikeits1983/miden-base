@@ -193,7 +193,7 @@ fn test_create_note() -> anyhow::Result<()> {
     let code = format!(
         "
         use.miden::tx
-        
+
         use.$kernel::prologue
 
         begin
@@ -290,16 +290,16 @@ fn note_creation_script(tag: Felt) -> String {
         "
             use.miden::tx
             use.$kernel::prologue
-    
+
             begin
                 exec.prologue::prepare_transaction
-    
+
                 push.{recipient}
                 push.{execution_hint_always}
                 push.{PUBLIC_NOTE}
                 push.{aux}
                 push.{tag}
-    
+
                 call.tx::create_note
 
                 # clean the stack
@@ -328,7 +328,7 @@ fn test_create_note_too_many_notes() -> anyhow::Result<()> {
             exec.constants::get_max_num_output_notes
             exec.memory::set_num_output_notes
             exec.prologue::prepare_transaction
-            
+
             push.{recipient}
             push.{execution_hint_always}
             push.{PUBLIC_NOTE}
@@ -464,7 +464,7 @@ fn test_get_output_notes_commitment() -> anyhow::Result<()> {
             push.{asset_1}
             call.tx::add_asset_to_note
             # => [ASSET, note_idx]
-            
+
             dropw drop
             # => []
 
@@ -477,7 +477,7 @@ fn test_get_output_notes_commitment() -> anyhow::Result<()> {
             call.tx::create_note
             # => [note_idx]
 
-            push.{asset_2} 
+            push.{asset_2}
             call.tx::add_asset_to_note
             # => [ASSET, note_idx]
 
@@ -733,12 +733,12 @@ fn test_create_note_and_add_same_nft_twice() -> anyhow::Result<()> {
             call.tx::create_note
             # => [note_idx, pad(15)]
 
-            push.{nft} 
+            push.{nft}
             call.tx::add_asset_to_note
             # => [NFT, note_idx, pad(15)]
             dropw
 
-            push.{nft} 
+            push.{nft}
             call.tx::add_asset_to_note
             # => [NFT, note_idx, pad(15)]
 
@@ -1573,8 +1573,8 @@ fn inputs_created_correctly() -> anyhow::Result<()> {
 
     let script = format!(
         r#"
-            use.miden::account  
-            
+            use.miden::account
+
             adv_map.A([1,2,3,4])=[5,6,7,8]
 
             begin

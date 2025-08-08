@@ -206,7 +206,7 @@ fn test_get_recipient_and_metadata() -> anyhow::Result<()> {
             # => [RECIPIENT]
 
             # assert the correctness of the recipient
-            push.{RECIPIENT} 
+            push.{RECIPIENT}
             assert_eqw.err="requested note has incorrect recipient"
             # => []
 
@@ -216,7 +216,7 @@ fn test_get_recipient_and_metadata() -> anyhow::Result<()> {
             # => [METADATA]
 
             # assert the correctness of the metadata
-            push.{METADATA} 
+            push.{METADATA}
             assert_eqw.err="requested note has incorrect metadata"
             # => []
 
@@ -313,7 +313,7 @@ fn test_get_assets() -> anyhow::Result<()> {
         begin
             {create_note_0}
             {check_note_0}
-            
+
             {create_note_1}
             {check_note_1}
 
