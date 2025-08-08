@@ -540,7 +540,7 @@ fn epilogue_fails_on_account_state_change_without_nonce_increment() -> anyhow::R
     let err = TransactionContextBuilder::with_noop_auth_account(ONE)
         .tx_script(tx_script)
         .build()?
-        .execute()
+        .execute_blocking()
         .unwrap_err();
 
     let TransactionExecutorError::TransactionProgramExecutionFailed(err) = err else {
@@ -559,7 +559,7 @@ fn epilogue_fails_on_account_state_change_without_nonce_increment() -> anyhow::R
 fn test_epilogue_execute_empty_transaction() -> anyhow::Result<()> {
     let tx_context = TransactionContextBuilder::with_noop_auth_account(ONE).build()?;
 
-    let err = tx_context.execute().expect_err("Expected execution to fail");
+    let err = tx_context.execute_blocking().expect_err("Expected execution to fail");
     let TransactionExecutorError::TransactionProgramExecutionFailed(err) = err else {
         panic!("unexpected error")
     };

@@ -29,8 +29,8 @@ use vm_processor::crypto::RpoRandomCoin;
 use crate::utils::create_p2any_note;
 use crate::{Auth, MockChain, TransactionContextBuilder, TxContextInput};
 
-#[test]
-fn check_note_consumability_well_known_notes_success() -> anyhow::Result<()> {
+#[tokio::test]
+async fn check_note_consumability_well_known_notes_success() -> anyhow::Result<()> {
     let p2id_note = create_p2id_note(
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE.try_into().unwrap(),
         ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE.try_into().unwrap(),
@@ -55,7 +55,6 @@ fn check_note_consumability_well_known_notes_success() -> anyhow::Result<()> {
     let tx_context = TransactionContextBuilder::with_existing_mock_account()
         .extend_input_notes(notes.clone())
         .build()?;
-    let source_manager = tx_context.source_manager();
 
     let input_notes = tx_context.input_notes().clone();
     let target_account_id = tx_context.account().id();
@@ -66,13 +65,9 @@ fn check_note_consumability_well_known_notes_success() -> anyhow::Result<()> {
         TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&tx_context, None).with_tracing();
     let notes_checker = NoteConsumptionChecker::new(&executor);
 
-    let execution_check_result = notes_checker.check_notes_consumability(
-        target_account_id,
-        block_ref,
-        input_notes,
-        tx_args,
-        source_manager,
-    )?;
+    let execution_check_result = notes_checker
+        .check_notes_consumability(target_account_id, block_ref, input_notes, tx_args)
+        .await?;
 
     assert_matches!(execution_check_result, NoteConsumptionInfo { successful, failed, .. }=> {
     assert_eq!(successful.len(), notes.len());
@@ -87,8 +82,10 @@ fn check_note_consumability_well_known_notes_success() -> anyhow::Result<()> {
 #[rstest::rstest]
 #[case::empty(vec![])]
 #[case::one(vec![create_p2any_note(ACCOUNT_ID_SENDER.try_into().unwrap(), &[FungibleAsset::mock(100)])])]
-#[test]
-fn check_note_consumability_custom_notes_success(#[case] notes: Vec<Note>) -> anyhow::Result<()> {
+#[tokio::test]
+async fn check_note_consumability_custom_notes_success(
+    #[case] notes: Vec<Note>,
+) -> anyhow::Result<()> {
     let tx_context = {
         let account = Account::mock(
             ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_UPDATABLE_CODE,
@@ -100,7 +97,6 @@ fn check_note_consumability_custom_notes_success(#[case] notes: Vec<Note>) -> an
             .extend_input_notes(notes.clone())
             .build()?
     };
-    let source_manager = tx_context.source_manager();
 
     let input_notes = tx_context.input_notes().clone();
     let account_id = tx_context.account().id();
@@ -111,13 +107,9 @@ fn check_note_consumability_custom_notes_success(#[case] notes: Vec<Note>) -> an
         TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&tx_context, None).with_tracing();
     let notes_checker = NoteConsumptionChecker::new(&executor);
 
-    let execution_check_result = notes_checker.check_notes_consumability(
-        account_id,
-        block_ref,
-        input_notes,
-        tx_args,
-        source_manager,
-    )?;
+    let execution_check_result = notes_checker
+        .check_notes_consumability(account_id, block_ref, input_notes, tx_args)
+        .await?;
 
     assert_matches!(execution_check_result, NoteConsumptionInfo { successful, failed, .. }=> {
         if notes.is_empty() {
@@ -130,8 +122,8 @@ fn check_note_consumability_custom_notes_success(#[case] notes: Vec<Note>) -> an
     Ok(())
 }
 
-#[test]
-fn check_note_consumability_failure() -> anyhow::Result<()> {
+#[tokio::test]
+async fn check_note_consumability_failure() -> anyhow::Result<()> {
     let mut builder = MockChain::builder();
     let account = builder.add_existing_wallet(Auth::BasicAuth)?;
     let mock_chain = builder.build()?;
@@ -182,7 +174,6 @@ fn check_note_consumability_failure() -> anyhow::Result<()> {
             ],
         )?
         .build()?;
-    let source_manager = tx_context.source_manager();
 
     let input_notes = tx_context.input_notes().clone();
     let account_id = tx_context.account().id();
@@ -193,15 +184,10 @@ fn check_note_consumability_failure() -> anyhow::Result<()> {
         TransactionExecutor::<'_, '_, _, UnreachableAuth>::new(&tx_context, None).with_tracing();
     let notes_checker = NoteConsumptionChecker::new(&executor);
 
-    let execution_check_result = notes_checker.check_notes_consumability(
-        account_id,
-        block_ref,
-        input_notes,
-        tx_args,
-        source_manager,
-    );
+    let execution_check_result = notes_checker
+        .check_notes_consumability(account_id, block_ref, input_notes, tx_args)
+        .await?;
 
-    let execution_check_result = execution_check_result.unwrap();
     assert_matches!(
         execution_check_result,
         NoteConsumptionInfo {
