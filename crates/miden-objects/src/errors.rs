@@ -3,14 +3,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::error::Error;
 
-use assembly::Report;
-use assembly::diagnostics::reporting::PrintDiagnostic;
+use miden_assembly::Report;
+use miden_assembly::diagnostics::reporting::PrintDiagnostic;
+use miden_core::Felt;
+use miden_core::mast::MastForestError;
 use miden_crypto::merkle::MmrError;
 use miden_crypto::utils::HexParseError;
+use miden_processor::DeserializationError;
 use thiserror::Error;
-use vm_core::Felt;
-use vm_core::mast::MastForestError;
-use vm_processor::DeserializationError;
 
 use super::account::AccountId;
 use super::asset::{FungibleAsset, NonFungibleAsset, TokenSymbol};
