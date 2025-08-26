@@ -1,6 +1,5 @@
 use anyhow::Context;
 use assert_matches::assert_matches;
-use miden_lib::errors::TransactionKernelError;
 use miden_lib::testing::note::NoteBuilder;
 use miden_objects::account::{AccountId, StorageMap, StorageSlot};
 use miden_objects::asset::{Asset, FungibleAsset, NonFungibleAsset};
