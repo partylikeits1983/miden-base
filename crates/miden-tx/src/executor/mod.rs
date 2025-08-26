@@ -25,7 +25,11 @@ pub use miden_processor::{ExecutionOptions, MastForestStore};
 
 use super::TransactionExecutorError;
 use crate::auth::TransactionAuthenticator;
-use crate::host::{AccountProcedureIndexMap, ScriptMastForestStore};
+use crate::host::{
+    AccountProcedureIndexMap,
+    ScriptMastForestStore,
+    compute_pre_fee_delta_commitment,
+};
 
 mod exec_host;
 pub use exec_host::TransactionExecutorHost;
@@ -489,22 +493,29 @@ fn build_executed_transaction<STORE: DataStore + Sync, AUTH: TransactionAuthenti
     stack_outputs: StackOutputs,
     host: TransactionExecutorHost<STORE, AUTH>,
 ) -> Result<ExecutedTransaction, TransactionExecutorError> {
-    let (account_delta, output_notes, generated_signatures, tx_progress) = host.into_parts();
+    // Note that the account delta already contains the removed transaction fee, so it is the
+    // full delta of the transaction.
+    let (mut post_fee_account_delta, output_notes, generated_signatures, tx_progress) =
+        host.into_parts();
 
     let tx_outputs =
         TransactionKernel::from_transaction_parts(&stack_outputs, &advice_inputs, output_notes)
             .map_err(TransactionExecutorError::TransactionOutputConstructionFailed)?;
 
-    let initial_account = tx_inputs.account();
-    let final_account = &tx_outputs.account;
+    // Compute the delta commitment of the delta before the fee was removed.
+    let pre_fee_delta_commitment =
+        compute_pre_fee_delta_commitment(&mut post_fee_account_delta, tx_outputs.fee)
+            .map_err(TransactionExecutorError::ComputePreFeeDelta)?;
 
-    let host_delta_commitment = account_delta.to_commitment();
-    if tx_outputs.account_delta_commitment != host_delta_commitment {
+    if tx_outputs.account_delta_commitment != pre_fee_delta_commitment {
         return Err(TransactionExecutorError::InconsistentAccountDeltaCommitment {
             in_kernel_commitment: tx_outputs.account_delta_commitment,
-            host_commitment: host_delta_commitment,
+            host_commitment: pre_fee_delta_commitment,
         });
     }
+
+    let initial_account = tx_inputs.account();
+    let final_account = &tx_outputs.account;
 
     if initial_account.id() != final_account.id() {
         return Err(TransactionExecutorError::InconsistentAccountId {
@@ -515,10 +526,10 @@ fn build_executed_transaction<STORE: DataStore + Sync, AUTH: TransactionAuthenti
 
     // make sure nonce delta was computed correctly
     let nonce_delta = final_account.nonce() - initial_account.nonce();
-    if nonce_delta != account_delta.nonce_delta() {
+    if nonce_delta != post_fee_account_delta.nonce_delta() {
         return Err(TransactionExecutorError::InconsistentAccountNonceDelta {
             expected: nonce_delta,
-            actual: account_delta.nonce_delta(),
+            actual: post_fee_account_delta.nonce_delta(),
         });
     }
 
@@ -528,7 +539,7 @@ fn build_executed_transaction<STORE: DataStore + Sync, AUTH: TransactionAuthenti
     Ok(ExecutedTransaction::new(
         tx_inputs,
         tx_outputs,
-        account_delta,
+        post_fee_account_delta,
         tx_args,
         advice_inputs,
         tx_progress.into(),

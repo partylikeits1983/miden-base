@@ -63,6 +63,7 @@
 - Avoid modifying an asset vault when adding a fungible asset with amount zero and the asset does not already exist ([#1668](https://github.com/0xMiden/miden-base/pull/1668)).
 - [BREAKING] Update `NoteConsumptionChecker::check_notes_consumability` and `TransactionExecutor::try_execute_notes` to return `NoteConsumptionInfo` containing lists of `Note` rather than `NoteId` ([#1680](https://github.com/0xMiden/miden-base/pull/1680)).
 - Refactor epilogue to run as much code as possible before fees are computed ([#1698](https://github.com/0xMiden/miden-base/pull/1698)).
+- Refactor epilogue to run as much code as possible before fees are computed ([#1698](https://github.com/0xMiden/miden-base/pull/1698), [#1705](https://github.com/0xMiden/miden-base/pull/1705)).
 - [BREAKING] Remove note script utils and rename `note::add_note_assets_to_account` to `note::add_assets_to_account` ([#1694](https://github.com/0xMiden/miden-base/pull/1694)).
 - [BREAKING] Move `IncrNonceAuthComponent`, `ConditionalAuthComponent` and `AccountMockComponent` to `miden-lib` ([#1722](https://github.com/0xMiden/miden-base/pull/1722)).
 - Refactor `contracts::auth::basic` into a reusable library procedure `auth::rpo_falcon512` ([#1712](https://github.com/0xMiden/miden-base/pull/1712)).
