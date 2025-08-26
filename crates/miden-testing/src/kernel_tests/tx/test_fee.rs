@@ -1,12 +1,11 @@
 use anyhow::Context;
 use assert_matches::assert_matches;
 use miden_lib::errors::TransactionKernelError;
+use miden_lib::testing::note::NoteBuilder;
 use miden_objects::account::{AccountId, StorageMap, StorageSlot};
-use miden_objects::assembly::Assembler;
 use miden_objects::asset::{Asset, FungibleAsset, NonFungibleAsset};
 use miden_objects::note::NoteType;
 use miden_objects::testing::account_id::ACCOUNT_ID_NATIVE_ASSET_FAUCET;
-use miden_objects::testing::note::NoteBuilder;
 use miden_objects::transaction::{ExecutedTransaction, OutputNote};
 use miden_objects::{self, Felt, Word};
 use miden_processor::ExecutionError;
@@ -183,7 +182,7 @@ fn create_output_notes() -> anyhow::Result<ExecutedTransaction> {
     // SPAWN note does not remove the assets from the account vault.
     let asset_note = NoteBuilder::new(account.id(), &mut rand::rng())
         .add_assets([Asset::from(note_asset0.add(note_asset1)?)])
-        .build(&Assembler::default())?;
+        .build()?;
     builder.add_note(OutputNote::Full(asset_note.clone()));
 
     let output_note0 = create_p2any_note(account.id(), &[note_asset0.into()]);
