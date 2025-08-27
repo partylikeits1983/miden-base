@@ -2,6 +2,10 @@
 
 ## 0.12.0 (TBD)
 
+### Changes
+
+- [BREAKING] Incremented MSRV to 1.89.
+
 ## 0.11.0 (2025-08-26)
 
 ### Features
