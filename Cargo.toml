@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "bin/bench-note-checker",
   "bin/bench-prover",
   "bin/bench-tx",
   "crates/miden-block-prover",
@@ -59,5 +60,6 @@ miden-verifier   = { default-features = false, version = "0.17" }
 # External dependencies
 assert_matches = { default-features = false, version = "1.5" }
 rand           = { default-features = false, version = "0.9" }
+rstest         = { version = "0.26" }
 thiserror      = { default-features = false, version = "2.0" }
 tokio          = { default-features = false, features = ["sync"], version = "1" }
