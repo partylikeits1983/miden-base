@@ -1,13 +1,15 @@
 use.std::collections::smt
 
-use.kernel::account_id
-use.kernel::asset
-use.kernel::memory
+use.$kernel::account_id
+use.$kernel::asset
+use.$kernel::memory
 
 # ERRORS
 # =================================================================================================
 
-const.ERR_VAULT_GET_BALANCE_PROC_CAN_ONLY_BE_CALLED_ON_FUNGIBLE_FAUCET="the get_balance procedure can only be called on a fungible faucet"
+const.ERR_VAULT_GET_BALANCE_CAN_ONLY_BE_CALLED_ON_FUNGIBLE_ASSET="get_balance can only be called on a fungible asset"
+
+const.ERR_VAULT_PEEK_BALANCE_CAN_ONLY_BE_CALLED_ON_FUNGIBLE_ASSET="peek_balance can only be called on a fungible asset"
 
 const.ERR_VAULT_HAS_NON_FUNGIBLE_ASSET_PROC_CAN_BE_CALLED_ONLY_WITH_NON_FUNGIBLE_ASSET="the has_non_fungible_asset procedure can only be called on a non-fungible faucet"
 
@@ -39,7 +41,8 @@ const.INVERSE_FUNGIBLE_BITMASK_U32=0xffffffdf # last byte: 0b1101_1111
 #!
 #! Where:
 #! - vault_root_ptr is a pointer to the memory location at which the vault root is stored.
-#! - faucet_id_prefix is the prefix of the faucet id of the fungible asset of interest.
+#! - faucet_id_{prefix, suffix} are the prefix and suffix felts of the faucet id of the fungible
+#!   asset of interest.
 #! - balance is the vault balance of the fungible asset.
 #!
 #! Panics if:
@@ -47,10 +50,10 @@ const.INVERSE_FUNGIBLE_BITMASK_U32=0xffffffdf # last byte: 0b1101_1111
 export.get_balance
     # assert that the faucet id is a fungible faucet
     dup exec.account_id::is_fungible_faucet
-    assert.err=ERR_VAULT_GET_BALANCE_PROC_CAN_ONLY_BE_CALLED_ON_FUNGIBLE_FAUCET
+    assert.err=ERR_VAULT_GET_BALANCE_CAN_ONLY_BE_CALLED_ON_FUNGIBLE_ASSET
     # => [faucet_id_prefix, faucet_id_suffix, vault_root_ptr]
 
-    # get the asset vault root
+    # load the asset vault root from memory
     padw movup.6 mem_loadw
     # => [ASSET_VAULT_ROOT, faucet_id_prefix, faucet_id_suffix]
 
@@ -62,8 +65,61 @@ export.get_balance
     exec.smt::get swapw dropw
     # => [ASSET]
 
-    # extract asset balance (ASSET[0])
-    drop drop drop
+    # extract the asset's balance
+    exec.::$kernel::util::asset::get_balance_from_fungible_asset
+    # => [balance]
+end
+
+#! Returns the _peeked_ balance of a fungible asset associated with the provided faucet_id.
+#!
+#! WARNING: Peeked means the balance is loaded from the advice provider, which is susceptible to
+#! manipulation from a malicious host. Therefore this should only be used when the inclusion of the
+#! peeked balance is verified at a later point.
+#!
+#! To get the verified balance, use get_balance.
+#!
+#! Inputs:  [faucet_id_prefix, faucet_id_suffix, vault_root_ptr]
+#! Outputs: [balance]
+#!
+#! Where:
+#! - vault_root_ptr is a pointer to the memory location at which the vault root is stored.
+#! - faucet_id_{prefix, suffix} are the prefix and suffix felts of the faucet id of the fungible
+#!   asset of interest.
+#! - balance is the vault balance of the fungible asset.
+#!
+#! Panics if:
+#! - the asset is not a fungible asset.
+export.peek_balance
+    # assert that the faucet id is a fungible faucet
+    dup exec.account_id::is_fungible_faucet
+    assert.err=ERR_VAULT_PEEK_BALANCE_CAN_ONLY_BE_CALLED_ON_FUNGIBLE_ASSET
+    # => [faucet_id_prefix, faucet_id_suffix, vault_root_ptr]
+
+    # load the asset vault root from memory
+    padw movup.6 mem_loadw
+    # => [ASSET_VAULT_ROOT, faucet_id_prefix, faucet_id_suffix]
+
+    # prepare the vault key for fungible asset lookup (pad least significant elements with zeros)
+    push.0.0 movup.7 movup.7
+    # => [faucet_id_prefix, faucet_id_suffix, 0, 0, ASSET_VAULT_ROOT]
+    # => [ASSET_KEY, ASSET_VAULT_ROOT]
+
+    # lookup asset
+    adv.push_smtpeek
+    # OS => [ASSET_KEY, ASSET_VAULT_ROOT]
+    # AS => [ASSET]
+
+    dropw
+    # OS => [ASSET_VAULT_ROOT]
+    # AS => [ASSET]
+
+    # this overwrites the vault root
+    adv_loadw
+    # OS => [ASSET]
+    # AS => []
+
+    # extract the asset's balance
+    exec.::$kernel::util::asset::get_balance_from_fungible_asset
     # => [balance]
 end
 
@@ -109,8 +165,11 @@ end
 # ADD ASSET
 # =================================================================================================
 
-#! Add the specified fungible asset to the vault. If the vault already contains an asset issued by
-#! the same faucet, the amounts are added together.
+#! Add the specified fungible asset to the vault.
+#!
+#! If the vault already contains an asset issued by the same faucet, the amounts are added together.
+#! If the amount to be added is zero and the asset does not already exist in the vault, the vault
+#! remains unchanged.
 #!
 #! Inputs:  [ASSET, vault_root_ptr]
 #! Outputs: [ASSET']
@@ -188,10 +247,25 @@ export.add_fungible_asset
     swapw
     # => [ASSET', ASSET_KEY', VAULT_ROOT, CUR_VAULT_VALUE, ASSET', vault_root_ptr]
 
+    # pad empty word for insertion
+    padw
+    # => [EMPTY_WORD, ASSET', ASSET_KEY', VAULT_ROOT, CUR_VAULT_VALUE, ASSET', vault_root_ptr]
+
+    # check if amount of new asset is zero
+    # if it is zero, insert EMPTY_WORD to keep the merkle tree sparse
+    dup.7 eq.0
+    # => [is_amount_zero, EMPTY_WORD, ASSET', ASSET_KEY', VAULT_ROOT, CUR_VAULT_VALUE, ASSET', vault_root_ptr]
+
+    # If is_amount_zero EMPTY_WORD remains.
+    # If !is_amount_zero ASSET' remains.
+    cdropw
+    # => [EMPTY_WORD_OR_ASSET', ASSET_KEY', VAULT_ROOT, CUR_VAULT_VALUE, ASSET', vault_root_ptr]
+
     # update asset in vault and assert the old value is equivalent to the value provided via the
     # decorator
     exec.smt::set
     # => [PREV_ASSET, VAULT_ROOT', CUR_VAULT_VALUE, ASSET', vault_root_ptr]
+
     movupw.2 assert_eqw.err=ERR_VAULT_ADD_FUNGIBLE_ASSET_FAILED_INITIAL_VALUE_INVALID
     # => [VAULT_ROOT', ASSET', vault_root_ptr]
 
@@ -293,55 +367,81 @@ end
 #! - ASSET is the fungible asset to remove from the vault.
 #! - vault_root_ptr is a pointer to the memory location at which the vault root is stored.
 #!
+#! Locals:
+#! - 0..4: ASSET
+#!
 #! Panics if:
 #! - the amount of the asset in the vault is less than the amount to be removed.
-export.remove_fungible_asset
-    dupw push.0 movdn.3 dup movdn.4
-    # => [ASSET_KEY, faucet_id, amount, ASSET, vault_root_ptr]
+export.remove_fungible_asset.4
+    exec.build_fungible_asset_vault_key
+    # => [ASSET_KEY, ASSET, vault_root_ptr]
 
-    # get the asset vault root and read the vault asset value using the `push_smtpeek` decorator
-    # To account for the edge case in which CUR_VAULT_VALUE is an EMPTY_WORD, we replace the most
-    # significant element with the faucet_id to construct the CUR_ASSET.
-    padw dup.14 mem_loadw swapw
-    adv.push_smtpeek
-    adv_loadw dupw movdnw.2 drop movup.11
-    # => [CUR_ASSET, VAULT_ROOT, CUR_VAULT_VALUE, amount, ASSET, vault_root_ptr]
+    dupw movdnw.2
+    # => [ASSET_KEY, ASSET, ASSET_KEY, vault_root_ptr]
 
-    # arrange elements
-    movup.3 movup.12 dup dup.2
-    # => [cur_amount, amount, amount, cur_amount, faucet_id, 0, 0, VAULT_ROOT, CUR_VAULT_VALUE,
-    #     ASSET, vault_root_ptr]
+    dup.12 movdn.4
+    # => [ASSET_KEY, vault_root_ptr, ASSET, ASSET_KEY, vault_root_ptr]
 
-    # assert amount <= cur_amount
+    exec.peek_asset
+    # => [PEEKED_ASSET, ASSET, ASSET_KEY, vault_root_ptr]
+
+    movdnw.2
+    # => [ASSET, ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
+
+    # store ASSET so we can return it later
+    loc_storew.0
+    # => [ASSET, ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
+
+    dup.3 dup.12
+    # => [peeked_amount, amount, ASSET, ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
+
+    # assert amount <= peeked_amount
     lte assert.err=ERR_VAULT_FUNGIBLE_ASSET_AMOUNT_LESS_THAN_AMOUNT_TO_WITHDRAW
-    # => [amount, cur_amount, faucet_id, 0, 0, VAULT_ROOT, CUR_VAULT_VALUE, ASSET, vault_root_ptr]
+    # => [ASSET, ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
+    # => [[faucet_id_prefix, faucet_id_suffix, 0, amount], ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
 
-    # asset amount + cur_amount < max_amount
+    dup.11 movup.4
+    # => [amount, peeked_amount, [faucet_id_prefix, faucet_id_suffix, 0], ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
+
+    # compute peeked_amount - amount
     sub
-    # => [new_amount, faucet_id, 0, 0, VAULT_ROOT, CUR_VAULT_VALUE, ASSET, vault_root_ptr]
+    # => [new_amount, [faucet_id_prefix, faucet_id_suffix, 0], ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
 
-    # => check if the asset amount is zero
-    dup eq.0
-    # => [is_zero, new_amount, faucet_id, 0, 0, VAULT_ROOT, CUR_VAULT_VALUE, ASSET, vault_root_ptr]
+    movdn.3
+    # => [[faucet_id_prefix, faucet_id_suffix, new_amount], ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
+    # => [ASSET', ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
 
-    if.true
-        # fungible asset empty - insert EMPTY_WORD in vault
-        movdn.3 padw
-        # => [EMPTY_WORD, ASSET_KEY, VAULT_ROOT, CUR_VAULT_VALUE, ASSET, vault_root_ptr]
-    else
-        # fungible asset not empty - update asset in vault
-        movdn.3 dupw movup.3 drop push.0 movdn.3 swapw
-        # => [NEW_ASSET, ASSET_KEY, VAULT_ROOT, CUR_VAULT_VALUE, ASSET, vault_root_ptr]
-    end
+    padw dup.7
+    # => [new_amount, EMPTY_WORD, ASSET', ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
 
-    # update asset in vault and assert the old value is equivalent to the value provided via the
-    # decorator
-    exec.smt::set movupw.2
-    assert_eqw.err=ERR_VAULT_REMOVE_FUNGIBLE_ASSET_FAILED_INITIAL_VALUE_INVALID
-    # => [VAULT_ROOT', ASSET, vault_root_ptr]
+    eq.0
+    # => [is_new_amount_zero, EMPTY_WORD, ASSET', ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
 
-    # update the vault root
-    movup.8 mem_storew dropw
+    # If is_new_amount_zero EMPTY_WORD remains.
+    # If !is_new_amount_zero ASSET' remains.
+    cdropw
+    # => [EMPTY_WORD_OR_ASSET', ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
+
+    dup.12 padw movup.4 mem_loadw
+    # => [VAULT_ROOT, EMPTY_WORD_OR_ASSET', ASSET_KEY, PEEKED_ASSET, vault_root_ptr]
+
+    movdnw.2
+    # => [EMPTY_WORD_OR_ASSET', ASSET_KEY, VAULT_ROOT, PEEKED_ASSET, vault_root_ptr]
+
+    # update asset in vault and assert the old value is equivalent to the peeked value provided
+    # via peek_asset
+    exec.smt::set
+    # => [OLD_VALUE, NEW_VAULT_ROOT, PEEKED_ASSET, vault_root_ptr]
+
+    # assert OLD_VALUE == PEEKED_ASSET
+    movupw.2 assert_eqw.err=ERR_VAULT_REMOVE_FUNGIBLE_ASSET_FAILED_INITIAL_VALUE_INVALID
+    # => [NEW_VAULT_ROOT, vault_root_ptr]
+
+    # update vault root
+    movup.4 mem_storew
+    # => [NEW_VAULT_ROOT]
+
+    loc_loadw.0
     # => [ASSET]
 end
 
@@ -413,6 +513,41 @@ end
 # HELPER PROCEDURES
 # =================================================================================================
 
+#! Returns the _peeked_ asset associated with the provided faucet_id.
+#!
+#! Note that ASSET can be the EMPTY_WORD if the value at the provided ASSET_KEY does not exist.
+#!
+#! Inputs:  [ASSET_KEY, vault_root_ptr]
+#! Outputs: [ASSET]
+#!
+#! Where:
+#! - vault_root_ptr is a pointer to the memory location at which the vault root is stored.
+#! - faucet_id_{prefix, suffix} are the prefix and suffix felts of the faucet id of the fungible
+#!   asset of interest.
+#! - asset is the peeked asset from the vault.
+proc.peek_asset
+    # load the asset vault root from memory
+    padw movup.8 mem_loadw
+    # => [ASSET_VAULT_ROOT, ASSET_KEY]
+
+    swapw
+    # => [ASSET_KEY, ASSET_VAULT_ROOT]
+
+    # lookup asset
+    adv.push_smtpeek
+    # OS => [ASSET_KEY, ASSET_VAULT_ROOT]
+    # AS => [ASSET]
+
+    dropw
+    # OS => [ASSET_VAULT_ROOT]
+    # AS => [ASSET]
+
+    # this overwrites the vault root
+    adv_loadw
+    # OS => [ASSET]
+    # AS => []
+end
+
 #! Builds the vault key of a non fungible asset. The asset is NOT validated and therefore must
 #! be a valid non-fungible asset.
 #!
@@ -437,7 +572,7 @@ export.build_non_fungible_asset_vault_key
     # => [hash0_lo', hash0_hi, hash2, hash1 faucet_id_prefix]
 
     # reassemble hash0 felt by multiplying the high part with 2^32 and adding the lo part
-    swap push.0x0100000000 mul add
+    swap mul.0x0100000000 add
     # => [ASSET_KEY]
 end
 

@@ -1,35 +1,23 @@
 mod prefix;
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
-use core::{fmt, hash::Hash};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::fmt;
+use core::hash::Hash;
 
-use bech32::{Bech32m, primitives::decode::CheckedHrpstring};
 use miden_crypto::utils::hex_to_bytes;
 pub use prefix::AccountIdPrefixV0;
-use vm_core::{
-    EMPTY_WORD, Felt, Word,
-    utils::{ByteReader, Deserializable, Serializable},
-};
-use vm_processor::{DeserializationError, Digest};
 
-use crate::{
-    AccountError, Hasher,
-    account::{
-        AccountIdVersion, AccountStorageMode, AccountType,
-        account_id::{
-            NetworkId,
-            account_type::{
-                FUNGIBLE_FAUCET, NON_FUNGIBLE_FAUCET, REGULAR_ACCOUNT_IMMUTABLE_CODE,
-                REGULAR_ACCOUNT_UPDATABLE_CODE,
-            },
-            address_type::AddressType,
-            storage_mode::{NETWORK, PRIVATE, PUBLIC},
-        },
-    },
-    errors::{AccountIdError, Bech32Error},
+use crate::account::account_id::account_type::{
+    FUNGIBLE_FAUCET,
+    NON_FUNGIBLE_FAUCET,
+    REGULAR_ACCOUNT_IMMUTABLE_CODE,
+    REGULAR_ACCOUNT_UPDATABLE_CODE,
 };
+use crate::account::account_id::storage_mode::{NETWORK, PRIVATE, PUBLIC};
+use crate::account::{AccountIdVersion, AccountStorageMode, AccountType};
+use crate::errors::AccountIdError;
+use crate::utils::{ByteReader, Deserializable, DeserializationError, Serializable};
+use crate::{AccountError, EMPTY_WORD, Felt, Hasher, Word};
 
 // ACCOUNT ID VERSION 0
 // ================================================================================================
@@ -78,8 +66,8 @@ impl AccountIdV0 {
     /// See [`AccountId::new`](super::AccountId::new) for details.
     pub fn new(
         seed: Word,
-        code_commitment: Digest,
-        storage_commitment: Digest,
+        code_commitment: Word,
+        storage_commitment: Word,
     ) -> Result<Self, AccountIdError> {
         let seed_digest = compute_digest(seed, code_commitment, storage_commitment);
 
@@ -158,8 +146,8 @@ impl AccountIdV0 {
         account_type: AccountType,
         storage_mode: AccountStorageMode,
         version: AccountIdVersion,
-        code_commitment: Digest,
-        storage_commitment: Digest,
+        code_commitment: Word,
+        storage_commitment: Word,
     ) -> Result<Word, AccountError> {
         crate::account::account_id::seed::compute_account_seed(
             init_seed,
@@ -222,64 +210,6 @@ impl AccountIdV0 {
             format!("0x{:016x}{:016x}", self.prefix().as_u64(), self.suffix().as_int());
         hex_string.truncate(32);
         hex_string
-    }
-
-    /// See [`AccountId::to_bech32`](super::AccountId::to_bech32) for details.
-    pub fn to_bech32(&self, network_id: NetworkId) -> String {
-        let id_bytes: [u8; Self::SERIALIZED_SIZE] = (*self).into();
-
-        let mut data = [0; Self::SERIALIZED_SIZE + 1];
-        data[0] = AddressType::AccountId as u8;
-        data[1..16].copy_from_slice(&id_bytes);
-
-        // SAFETY: Encoding only panics if the total length of the hrp, data (in GF(32)), separator
-        // and checksum exceeds Bech32m::CODE_LENGTH, which is 1023. Since the data is 26 bytes in
-        // that field and the hrp is at most 83 in size we are way below the limit.
-        bech32::encode::<Bech32m>(network_id.into_hrp(), &data)
-            .expect("code length of bech32 should not be exceeded")
-    }
-
-    /// See [`AccountId::from_bech32`](super::AccountId::from_bech32) for details.
-    pub fn from_bech32(bech32_string: &str) -> Result<(NetworkId, Self), AccountIdError> {
-        // We use CheckedHrpString with an explicit checksum algorithm so we don't allow the
-        // `Bech32` or `NoChecksum` algorithms.
-        let checked_string = CheckedHrpstring::new::<Bech32m>(bech32_string).map_err(|source| {
-            // The CheckedHrpStringError does not implement core::error::Error, only
-            // std::error::Error, so for now we convert it to a String. Even if it will
-            // implement the trait in the future, we should include it as an opaque
-            // error since the crate does not have a stable release yet.
-            AccountIdError::Bech32DecodeError(Bech32Error::DecodeError(source.to_string().into()))
-        })?;
-
-        let hrp = checked_string.hrp();
-        let network_id = NetworkId::from_hrp(hrp);
-
-        let mut byte_iter = checked_string.byte_iter();
-        // The length must be the serialized size of the account ID plus the address byte.
-        if byte_iter.len() != Self::SERIALIZED_SIZE + 1 {
-            return Err(AccountIdError::Bech32DecodeError(Bech32Error::InvalidDataLength {
-                expected: Self::SERIALIZED_SIZE + 1,
-                actual: byte_iter.len(),
-            }));
-        }
-
-        let address_byte = byte_iter.next().expect("there should be at least one byte");
-        if address_byte != AddressType::AccountId as u8 {
-            return Err(AccountIdError::Bech32DecodeError(Bech32Error::UnknownAddressType(
-                address_byte,
-            )));
-        }
-
-        // Every byte is guaranteed to be overwritten since we've checked the length of the
-        // iterator.
-        let mut id_bytes = [0_u8; Self::SERIALIZED_SIZE];
-        for (i, byte) in byte_iter.enumerate() {
-            id_bytes[i] = byte;
-        }
-
-        let account_id = Self::try_from(id_bytes)?;
-
-        Ok((network_id, account_id))
     }
 
     /// Returns the [`AccountIdPrefixV0`] of this account ID.
@@ -385,7 +315,7 @@ impl TryFrom<u128> for AccountIdV0 {
 // ================================================================================================
 
 impl Serializable for AccountIdV0 {
-    fn write_into<W: miden_crypto::utils::ByteWriter>(&self, target: &mut W) {
+    fn write_into<W: miden_core::utils::ByteWriter>(&self, target: &mut W) {
         let bytes: [u8; 15] = (*self).into();
         bytes.write_into(target);
     }
@@ -524,11 +454,7 @@ impl fmt::Display for AccountIdV0 {
 
 /// Returns the digest of two hashing permutations over the seed, code commitment, storage
 /// commitment and padding.
-pub(crate) fn compute_digest(
-    seed: Word,
-    code_commitment: Digest,
-    storage_commitment: Digest,
-) -> Digest {
+pub(crate) fn compute_digest(seed: Word, code_commitment: Word, storage_commitment: Word) -> Word {
     let mut elements = Vec::with_capacity(16);
     elements.extend(seed);
     elements.extend(*code_commitment);
@@ -544,13 +470,13 @@ pub(crate) fn compute_digest(
 mod tests {
 
     use super::*;
-    use crate::{
-        account::AccountIdPrefix,
-        testing::account_id::{
-            ACCOUNT_ID_PRIVATE_NON_FUNGIBLE_FAUCET, ACCOUNT_ID_PRIVATE_SENDER,
-            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
-            ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
-        },
+    use crate::account::AccountIdPrefix;
+    use crate::testing::account_id::{
+        ACCOUNT_ID_PRIVATE_NON_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PRIVATE_SENDER,
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_REGULAR_PRIVATE_ACCOUNT_UPDATABLE_CODE,
+        ACCOUNT_ID_REGULAR_PUBLIC_ACCOUNT_IMMUTABLE_CODE,
     };
 
     #[test]

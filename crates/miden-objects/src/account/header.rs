@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
-use super::{Account, AccountId, Digest, Felt, PartialAccount, ZERO, hash_account};
+use super::{Account, AccountId, Felt, PartialAccount, ZERO, hash_account};
+use crate::Word;
 use crate::utils::serde::{Deserializable, Serializable};
 
 // ACCOUNT HEADER
@@ -19,9 +20,9 @@ use crate::utils::serde::{Deserializable, Serializable};
 pub struct AccountHeader {
     id: AccountId,
     nonce: Felt,
-    vault_root: Digest,
-    storage_commitment: Digest,
-    code_commitment: Digest,
+    vault_root: Word,
+    storage_commitment: Word,
+    code_commitment: Word,
 }
 
 impl AccountHeader {
@@ -31,9 +32,9 @@ impl AccountHeader {
     pub fn new(
         id: AccountId,
         nonce: Felt,
-        vault_root: Digest,
-        storage_commitment: Digest,
-        code_commitment: Digest,
+        vault_root: Word,
+        storage_commitment: Word,
+        code_commitment: Word,
     ) -> Self {
         Self {
             id,
@@ -52,7 +53,7 @@ impl AccountHeader {
     /// The commitment of an account is computed as hash(id, nonce, vault_root, storage_commitment,
     /// code_commitment). Computing the account commitment requires 2 permutations of the hash
     /// function.
-    pub fn commitment(&self) -> Digest {
+    pub fn commitment(&self) -> Word {
         hash_account(
             self.id,
             self.nonce,
@@ -73,17 +74,17 @@ impl AccountHeader {
     }
 
     /// Returns the vault root of this account.
-    pub fn vault_root(&self) -> Digest {
+    pub fn vault_root(&self) -> Word {
         self.vault_root
     }
 
     /// Returns the storage commitment of this account.
-    pub fn storage_commitment(&self) -> Digest {
+    pub fn storage_commitment(&self) -> Word {
         self.storage_commitment
     }
 
     /// Returns the code commitment of this account.
-    pub fn code_commitment(&self) -> Digest {
+    pub fn code_commitment(&self) -> Word {
         self.code_commitment
     }
 
@@ -147,7 +148,7 @@ impl From<&Account> for AccountHeader {
 }
 
 impl Serializable for AccountHeader {
-    fn write_into<W: vm_core::utils::ByteWriter>(&self, target: &mut W) {
+    fn write_into<W: miden_core::utils::ByteWriter>(&self, target: &mut W) {
         self.id.write_into(target);
         self.nonce.write_into(target);
         self.vault_root.write_into(target);
@@ -157,14 +158,14 @@ impl Serializable for AccountHeader {
 }
 
 impl Deserializable for AccountHeader {
-    fn read_from<R: vm_core::utils::ByteReader>(
+    fn read_from<R: miden_core::utils::ByteReader>(
         source: &mut R,
-    ) -> Result<Self, vm_processor::DeserializationError> {
+    ) -> Result<Self, miden_processor::DeserializationError> {
         let id = AccountId::read_from(source)?;
         let nonce = Felt::read_from(source)?;
-        let vault_root = Digest::read_from(source)?;
-        let storage_commitment = Digest::read_from(source)?;
-        let code_commitment = Digest::read_from(source)?;
+        let vault_root = Word::read_from(source)?;
+        let storage_commitment = Word::read_from(source)?;
+        let code_commitment = Word::read_from(source)?;
 
         Ok(AccountHeader {
             id,
@@ -181,22 +182,20 @@ impl Deserializable for AccountHeader {
 
 #[cfg(test)]
 mod tests {
-    use vm_core::{
-        Felt,
-        utils::{Deserializable, Serializable},
-    };
+    use miden_core::Felt;
+    use miden_core::utils::{Deserializable, Serializable};
 
     use super::AccountHeader;
-    use crate::{
-        account::{StorageSlot, tests::build_account},
-        asset::FungibleAsset,
-    };
+    use crate::Word;
+    use crate::account::StorageSlot;
+    use crate::account::tests::build_account;
+    use crate::asset::FungibleAsset;
 
     #[test]
     fn test_serde_account_storage() {
         let init_nonce = Felt::new(1);
         let asset_0 = FungibleAsset::mock(99);
-        let word = [Felt::new(1), Felt::new(2), Felt::new(3), Felt::new(4)];
+        let word = Word::from([1, 2, 3, 4u32]);
         let storage_slot = StorageSlot::Value(word);
         let account = build_account(vec![asset_0], init_nonce, vec![storage_slot]);
 

@@ -1,9 +1,8 @@
-use core::{fmt, str::FromStr};
+use core::fmt;
+use core::str::FromStr;
 
-use crate::{
-    errors::AccountIdError,
-    utils::serde::{ByteReader, Deserializable, DeserializationError, Serializable},
-};
+use crate::errors::AccountIdError;
+use crate::utils::serde::{ByteReader, Deserializable, DeserializationError, Serializable};
 
 // ACCOUNT TYPE
 // ================================================================================================
@@ -63,7 +62,7 @@ impl rand::distr::Distribution<AccountType> for rand::distr::StandardUniform {
 // ================================================================================================
 
 impl Serializable for AccountType {
-    fn write_into<W: vm_core::utils::ByteWriter>(&self, target: &mut W) {
+    fn write_into<W: miden_core::utils::ByteWriter>(&self, target: &mut W) {
         target.write_u8(*self as u8);
     }
 }

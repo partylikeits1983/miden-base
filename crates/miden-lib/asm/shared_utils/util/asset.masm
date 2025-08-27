@@ -1,7 +1,10 @@
 # CONSTANTS
 # =================================================================================================
 
-const.FUNGIBLE_ASSET_MAX_AMOUNT=9223372036854775807
+# Specifies the maximum amount a fungible asset can represent.
+#
+# This is 2^63 - 2^31. See account_delta.masm for more details.
+const.FUNGIBLE_ASSET_MAX_AMOUNT=0x7fffffff80000000
 
 # PROCEDURES
 # =================================================================================================
@@ -16,4 +19,19 @@ const.FUNGIBLE_ASSET_MAX_AMOUNT=9223372036854775807
 export.get_fungible_asset_max_amount
     push.FUNGIBLE_ASSET_MAX_AMOUNT
     # => [fungible_asset_max_amount]
+end
+
+#! Returns the balance of the given fungible asset.
+#!
+#! Note: Assumes that the given asset is fungible and does NOT validate it.
+#!
+#! Inputs:  [ASSET]
+#! Outputs: [balance]
+#!
+#! Where:
+#! - ASSET is the fungible asset from which to extract the balance.
+#! - balance is the amount of the fungible asset.
+export.get_balance_from_fungible_asset
+    drop drop drop
+    # => [balance]
 end

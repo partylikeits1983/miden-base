@@ -1,11 +1,17 @@
-use super::{
-    AssetError, Felt, Hasher, TokenSymbolError, Word, ZERO,
-    account::AccountType,
-    utils::serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
+use super::account::AccountType;
+use super::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
 };
+use super::{AssetError, Felt, Hasher, TokenSymbolError, Word, ZERO};
 use crate::account::AccountIdPrefix;
 
 mod fungible;
+use alloc::boxed::Box;
+
 pub use fungible::FungibleAsset;
 
 mod nonfungible;
@@ -53,7 +59,7 @@ pub use vault::{AssetVault, PartialVault};
 /// properties described above (the fungible bit is `1`).
 ///
 /// The least significant element is set to the amount of the asset. This amount cannot be greater
-/// than 2^63 - 1 and thus requires 63-bits to store.
+/// than [`FungibleAsset::MAX_AMOUNT`] and thus fits into a felt.
 ///
 /// Elements 1 and 2 are set to ZERO.
 ///
@@ -189,6 +195,11 @@ impl TryFrom<Word> for Asset {
     type Error = AssetError;
 
     fn try_from(value: Word) -> Result<Self, Self::Error> {
+        // Return an error if element 3 is not a valid account ID prefix, which cannot be checked by
+        // is_not_a_non_fungible_asset.
+        AccountIdPrefix::try_from(value[3])
+            .map_err(|err| AssetError::InvalidFaucetAccountId(Box::from(err)))?;
+
         if is_not_a_non_fungible_asset(value) {
             FungibleAsset::try_from(value).map(Asset::from)
         } else {
@@ -265,20 +276,20 @@ fn is_not_a_non_fungible_asset(asset: Word) -> bool {
 #[cfg(test)]
 mod tests {
 
-    use miden_crypto::{
-        Word,
-        utils::{Deserializable, Serializable},
-    };
+    use miden_crypto::Word;
+    use miden_crypto::utils::{Deserializable, Serializable};
 
     use super::{Asset, FungibleAsset, NonFungibleAsset, NonFungibleAssetDetails};
-    use crate::{
-        account::{AccountId, AccountIdPrefix},
-        testing::account_id::{
-            ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET, ACCOUNT_ID_PRIVATE_NON_FUNGIBLE_FAUCET,
-            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1,
-            ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2, ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_3,
-            ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET, ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET_1,
-        },
+    use crate::account::{AccountId, AccountIdPrefix};
+    use crate::testing::account_id::{
+        ACCOUNT_ID_PRIVATE_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PRIVATE_NON_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_1,
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_2,
+        ACCOUNT_ID_PUBLIC_FUNGIBLE_FAUCET_3,
+        ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET,
+        ACCOUNT_ID_PUBLIC_NON_FUNGIBLE_FAUCET_1,
     };
 
     #[test]

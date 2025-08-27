@@ -1,30 +1,41 @@
-use alloc::{collections::BTreeSet, sync::Arc, vec::Vec};
+use alloc::collections::BTreeSet;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
+use miden_lib::errors::TransactionKernelError;
 use miden_lib::transaction::TransactionKernel;
-use miden_objects::{
-    Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES,
-    account::AccountId,
-    assembly::SourceManager,
-    block::{BlockHeader, BlockNumber},
-    note::{NoteId, NoteScript},
-    transaction::{
-        AccountInputs, ExecutedTransaction, InputNote, InputNotes, TransactionArgs,
-        TransactionInputs, TransactionScript,
-    },
-    vm::{AdviceMap, StackOutputs},
+use miden_objects::account::AccountId;
+use miden_objects::assembly::DefaultSourceManager;
+use miden_objects::assembly::debuginfo::SourceManagerSync;
+use miden_objects::asset::Asset;
+use miden_objects::block::{BlockHeader, BlockNumber};
+use miden_objects::transaction::{
+    AccountInputs,
+    ExecutedTransaction,
+    InputNote,
+    InputNotes,
+    TransactionArgs,
+    TransactionInputs,
+    TransactionScript,
 };
-use vm_processor::{AdviceInputs, MemAdviceProvider, Process, RecAdviceProvider};
-pub use vm_processor::{ExecutionOptions, MastForestStore};
-use winter_maybe_async::{maybe_async, maybe_await};
+use miden_objects::vm::StackOutputs;
+use miden_objects::{Felt, MAX_TX_EXECUTION_CYCLES, MIN_TX_EXECUTION_CYCLES};
+use miden_processor::fast::FastProcessor;
+use miden_processor::{AdviceInputs, ExecutionError, StackInputs};
+pub use miden_processor::{ExecutionOptions, MastForestStore};
 
-use super::{TransactionExecutorError, TransactionHost};
-use crate::{auth::TransactionAuthenticator, host::ScriptMastForestStore};
+use super::TransactionExecutorError;
+use crate::auth::TransactionAuthenticator;
+use crate::host::{AccountProcedureIndexMap, ScriptMastForestStore};
+
+mod exec_host;
+pub use exec_host::TransactionExecutorHost;
 
 mod data_store;
 pub use data_store::DataStore;
 
 mod notes_checker;
-pub use notes_checker::{NoteConsumptionChecker, NoteInputsCheck};
+pub use notes_checker::{FailedNote, NoteConsumptionChecker, NoteConsumptionInfo};
 
 // TRANSACTION EXECUTOR
 // ================================================================================================
@@ -38,27 +49,31 @@ pub use notes_checker::{NoteConsumptionChecker, NoteInputsCheck};
 /// The transaction executor uses dynamic dispatch with trait objects for the [DataStore] and
 /// [TransactionAuthenticator], allowing it to be used with different backend implementations.
 /// At the moment of execution, the [DataStore] is expected to provide all required MAST nodes.
-pub struct TransactionExecutor<'store, 'auth> {
-    data_store: &'store dyn DataStore,
-    authenticator: Option<&'auth dyn TransactionAuthenticator>,
+pub struct TransactionExecutor<'store, 'auth, STORE: 'store, AUTH: 'auth> {
+    data_store: &'store STORE,
+    authenticator: Option<&'auth AUTH>,
+    source_manager: Arc<dyn SourceManagerSync>,
     exec_options: ExecutionOptions,
 }
 
-impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
-    // CONSTRUCTOR
+impl<'store, 'auth, STORE, AUTH> TransactionExecutor<'store, 'auth, STORE, AUTH>
+where
+    STORE: DataStore + 'store + Sync,
+    AUTH: TransactionAuthenticator + 'auth + Sync,
+{
+    // CONSTRUCTORS
     // --------------------------------------------------------------------------------------------
 
-    /// Creates a new [TransactionExecutor] instance with the specified [DataStore] and
-    /// [TransactionAuthenticator].
-    pub fn new(
-        data_store: &'store dyn DataStore,
-        authenticator: Option<&'auth dyn TransactionAuthenticator>,
-    ) -> Self {
+    /// Creates a new [TransactionExecutor] instance with the specified [DataStore].
+    ///
+    /// The created executor will not have the authenticator or source manager set, and tracing and
+    /// debug mode will be turned off.
+    pub fn new(data_store: &'store STORE) -> Self {
         const _: () = assert!(MIN_TX_EXECUTION_CYCLES <= MAX_TX_EXECUTION_CYCLES);
-
-        Self {
+        TransactionExecutor {
             data_store,
-            authenticator,
+            authenticator: None,
+            source_manager: Arc::new(DefaultSourceManager::default()),
             exec_options: ExecutionOptions::new(
                 Some(MAX_TX_EXECUTION_CYCLES),
                 MIN_TX_EXECUTION_CYCLES,
@@ -69,37 +84,66 @@ impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
         }
     }
 
-    /// Creates a new [TransactionExecutor] instance with the specified [DataStore],
-    /// [TransactionAuthenticator] and [ExecutionOptions].
+    /// Adds the specified [TransactionAuthenticator] to the executor and returns the resulting
+    /// executor.
     ///
-    /// The specified cycle values (`max_cycles` and `expected_cycles`) in the [ExecutionOptions]
-    /// must be within the range [`MIN_TX_EXECUTION_CYCLES`] and [`MAX_TX_EXECUTION_CYCLES`].
+    /// This will overwrite any previously set authenticator.
+    #[must_use]
+    pub fn with_authenticator(mut self, authenticator: &'auth AUTH) -> Self {
+        self.authenticator = Some(authenticator);
+        self
+    }
+
+    /// Adds the specified source manager to the executor and returns the resulting executor.
+    ///
+    /// The `source_manager` is used to map potential errors back to their source code. To get the
+    /// most value out of it, use the same source manager as was used with the
+    /// [`Assembler`](miden_objects::assembly::Assembler) that assembled the Miden Assembly code
+    /// that should be debugged, e.g. account components, note scripts or transaction scripts.
+    ///
+    /// This will overwrite any previously set source manager.
+    #[must_use]
+    pub fn with_source_manager(mut self, source_manager: Arc<dyn SourceManagerSync>) -> Self {
+        self.source_manager = source_manager;
+        self
+    }
+
+    /// Sets the [ExecutionOptions] for the executor to the provided options and returns the
+    /// resulting executor.
+    ///
+    /// # Errors
+    /// Returns an error if the specified cycle values (`max_cycles` and `expected_cycles`) in
+    /// the [ExecutionOptions] are not within the range [`MIN_TX_EXECUTION_CYCLES`] and
+    /// [`MAX_TX_EXECUTION_CYCLES`].
     pub fn with_options(
-        data_store: &'store dyn DataStore,
-        authenticator: Option<&'auth dyn TransactionAuthenticator>,
+        mut self,
         exec_options: ExecutionOptions,
     ) -> Result<Self, TransactionExecutorError> {
         validate_num_cycles(exec_options.max_cycles())?;
         validate_num_cycles(exec_options.expected_cycles())?;
 
-        Ok(Self { data_store, authenticator, exec_options })
+        self.exec_options = exec_options;
+        Ok(self)
     }
 
-    /// Puts the [TransactionExecutor] into debug mode.
+    /// Puts the [TransactionExecutor] into debug mode and returns the resulting executor.
     ///
     /// When transaction executor is in debug mode, all transaction-related code (note scripts,
     /// account code) will be compiled and executed in debug mode. This will ensure that all debug
     /// instructions present in the original source code are executed.
+    #[must_use]
     pub fn with_debug_mode(mut self) -> Self {
         self.exec_options = self.exec_options.with_debugging(true);
         self
     }
 
-    /// Enables tracing for the created instance of [TransactionExecutor].
+    /// Enables tracing for the created instance of [TransactionExecutor] and returns the resulting
+    /// executor.
     ///
     /// When tracing is enabled, the executor will receive tracing events as various stages of the
     /// transaction kernel complete. This enables collecting basic stats about how long different
     /// stages of transaction execution take.
+    #[must_use]
     pub fn with_tracing(mut self) -> Self {
         self.exec_options = self.exec_options.with_tracing();
         self
@@ -118,13 +162,6 @@ impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
     /// provided `notes` were created. Then, it executes the transaction program and creates an
     /// [`ExecutedTransaction`].
     ///
-    /// The `source_manager` is used to map potential errors back to their source code. To get the
-    /// most value out of it, use the source manager from the
-    /// [`Assembler`](miden_objects::assembly::Assembler) that assembled the Miden Assembly code
-    /// that should be debugged, e.g. account components, note scripts or transaction scripts. If
-    /// no error-to-source mapping is desired, a default source manager can be passed, e.g.
-    /// [`DefaultSourceManager::default`](miden_objects::assembly::DefaultSourceManager::default).
-    ///
     /// # Errors:
     ///
     /// Returns an error if:
@@ -132,58 +169,31 @@ impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
     /// - If the transaction arguments contain foreign account data not anchored in the reference
     ///   block.
     /// - If any input notes were created in block numbers higher than the reference block.
-    #[maybe_async]
-    pub fn execute_transaction(
+    pub async fn execute_transaction(
         &self,
         account_id: AccountId,
         block_ref: BlockNumber,
         notes: InputNotes<InputNote>,
         tx_args: TransactionArgs,
-        source_manager: Arc<dyn SourceManager>,
     ) -> Result<ExecutedTransaction, TransactionExecutorError> {
-        let mut ref_blocks = validate_input_notes(&notes, block_ref)?;
-        ref_blocks.insert(block_ref);
+        let (mut host, tx_inputs, stack_inputs, advice_inputs) =
+            self.prepare_transaction(account_id, block_ref, notes, &tx_args, None).await?;
 
-        let (account, seed, ref_block, mmr) =
-            maybe_await!(self.data_store.get_transaction_inputs(account_id, ref_blocks))
-                .map_err(TransactionExecutorError::FetchTransactionInputsFailed)?;
+        let processor = FastProcessor::new_debug(stack_inputs.as_slice(), advice_inputs);
+        let (stack_outputs, advice_provider) = processor
+            .execute(&TransactionKernel::main(), &mut host)
+            .await
+            .map_err(map_execution_error)?;
 
-        validate_account_inputs(&tx_args, &ref_block)?;
+        // The stack is not necessary since it is being reconstructed when re-executing.
+        let (_stack, advice_map, merkle_store) = advice_provider.into_parts();
+        let advice_inputs = AdviceInputs {
+            map: advice_map,
+            store: merkle_store,
+            ..Default::default()
+        };
 
-        let tx_inputs = TransactionInputs::new(account, seed, ref_block, mmr, notes)
-            .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
-
-        let (stack_inputs, advice_inputs) =
-            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, None);
-
-        let advice_recorder = RecAdviceProvider::from(advice_inputs.into_inner());
-
-        let script_mast_store = ScriptMastForestStore::new(
-            tx_args.tx_script(),
-            tx_inputs.input_notes().iter().map(|n| n.note().script()),
-        );
-
-        let mut host = TransactionHost::new(
-            &tx_inputs.account().into(),
-            advice_recorder,
-            self.data_store,
-            script_mast_store,
-            self.authenticator,
-            tx_args.foreign_account_code_commitments(),
-        )
-        .map_err(TransactionExecutorError::TransactionHostCreationFailed)?;
-
-        // Execute the transaction kernel
-        let trace = vm_processor::execute(
-            &TransactionKernel::main(),
-            stack_inputs,
-            &mut host,
-            self.exec_options,
-            source_manager,
-        )
-        .map_err(TransactionExecutorError::TransactionProgramExecutionFailed)?;
-
-        build_executed_transaction(tx_args, tx_inputs, trace.stack_outputs().clone(), host)
+        build_executed_transaction(advice_inputs, tx_args, tx_inputs, stack_outputs, host)
     }
 
     // SCRIPT EXECUTION
@@ -192,168 +202,115 @@ impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
     /// Executes an arbitrary script against the given account and returns the stack state at the
     /// end of execution.
     ///
-    /// The `source_manager` is used to map potential errors back to their source code. To get the
-    /// most value out of it, use the source manager from the
-    /// [`Assembler`](miden_objects::assembly::Assembler) that assembled the Miden Assembly code
-    /// that should be debugged, e.g. account components, note scripts or transaction scripts. If
-    /// no error-to-source mapping is desired, a default source manager can be passed, e.g.
-    /// [`DefaultSourceManager::default`](miden_objects::assembly::DefaultSourceManager::default).
-    ///
     /// # Errors:
     /// Returns an error if:
     /// - If required data can not be fetched from the [DataStore].
     /// - If the transaction host can not be created from the provided values.
     /// - If the execution of the provided program fails.
-    #[maybe_async]
-    pub fn execute_tx_view_script(
+    pub async fn execute_tx_view_script(
         &self,
         account_id: AccountId,
         block_ref: BlockNumber,
         tx_script: TransactionScript,
         advice_inputs: AdviceInputs,
         foreign_account_inputs: Vec<AccountInputs>,
-        source_manager: Arc<dyn SourceManager>,
     ) -> Result<[Felt; 16], TransactionExecutorError> {
-        let ref_blocks = [block_ref].into_iter().collect();
-        let (account, seed, ref_block, mmr) =
-            maybe_await!(self.data_store.get_transaction_inputs(account_id, ref_blocks))
-                .map_err(TransactionExecutorError::FetchTransactionInputsFailed)?;
         let tx_args = TransactionArgs::new(Default::default(), foreign_account_inputs)
             .with_tx_script(tx_script);
 
-        validate_account_inputs(&tx_args, &ref_block)?;
+        let (mut host, _, stack_inputs, advice_inputs) = self
+            .prepare_transaction(
+                account_id,
+                block_ref,
+                InputNotes::default(),
+                &tx_args,
+                Some(advice_inputs),
+            )
+            .await?;
 
-        let tx_inputs = TransactionInputs::new(account, seed, ref_block, mmr, Default::default())
-            .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
-
-        let (stack_inputs, advice_inputs) =
-            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, Some(advice_inputs));
-        let advice_recorder = RecAdviceProvider::from(advice_inputs.into_inner());
-
-        let scripts_mast_store =
-            ScriptMastForestStore::new(tx_args.tx_script(), core::iter::empty::<&NoteScript>());
-
-        let mut host = TransactionHost::new(
-            &tx_inputs.account().into(),
-            advice_recorder,
-            self.data_store,
-            scripts_mast_store,
-            self.authenticator,
-            tx_args.foreign_account_code_commitments(),
-        )
-        .map_err(TransactionExecutorError::TransactionHostCreationFailed)?;
-
-        let mut process = Process::new(
-            TransactionKernel::tx_script_main().kernel().clone(),
-            stack_inputs,
-            self.exec_options,
-        )
-        .with_source_manager(source_manager);
-        let stack_outputs = process
+        let processor =
+            FastProcessor::new_with_advice_inputs(stack_inputs.as_slice(), advice_inputs);
+        let (stack_outputs, _advice_provider) = processor
             .execute(&TransactionKernel::tx_script_main(), &mut host)
+            .await
             .map_err(TransactionExecutorError::TransactionProgramExecutionFailed)?;
 
         Ok(*stack_outputs)
     }
 
-    // CHECK CONSUMABILITY
-    // ============================================================================================
+    // HELPER METHODS
+    // --------------------------------------------------------------------------------------------
 
-    /// Executes the transaction with specified notes, returning the [NoteAccountExecution::Success]
-    /// if all notes has been consumed successfully and [NoteAccountExecution::Failure] if some note
-    /// returned an error.
+    /// Prepares the data needed for transaction execution.
     ///
-    /// The `source_manager` is used to map potential errors back to their source code. To get the
-    /// most value out of it, use the source manager from the
-    /// [`Assembler`](miden_objects::assembly::Assembler) that assembled the Miden Assembly code
-    /// that should be debugged, e.g. account components, note scripts or transaction scripts. If
-    /// no error-to-source mapping is desired, a default source manager can be passed, e.g.
-    /// [`DefaultSourceManager::default`](miden_objects::assembly::DefaultSourceManager::default).
-    ///
-    /// # Errors:
-    /// Returns an error if:
-    /// - If required data can not be fetched from the [DataStore].
-    /// - If the transaction host can not be created from the provided values.
-    /// - If the execution of the provided program fails on the stage other than note execution.
-    #[maybe_async]
-    pub(crate) fn try_execute_notes(
+    /// Preparation includes loading transaction inputs from the data store, validating them, and
+    /// instantiating a transaction host.
+    async fn prepare_transaction(
         &self,
         account_id: AccountId,
         block_ref: BlockNumber,
         notes: InputNotes<InputNote>,
-        tx_args: TransactionArgs,
-        source_manager: Arc<dyn SourceManager>,
-    ) -> Result<NoteAccountExecution, TransactionExecutorError> {
+        tx_args: &TransactionArgs,
+        init_advice_inputs: Option<AdviceInputs>,
+    ) -> Result<
+        (
+            TransactionExecutorHost<'store, 'auth, STORE, AUTH>,
+            TransactionInputs,
+            StackInputs,
+            AdviceInputs,
+        ),
+        TransactionExecutorError,
+    > {
         let mut ref_blocks = validate_input_notes(&notes, block_ref)?;
         ref_blocks.insert(block_ref);
 
-        let (account, seed, ref_block, mmr) =
-            maybe_await!(self.data_store.get_transaction_inputs(account_id, ref_blocks))
-                .map_err(TransactionExecutorError::FetchTransactionInputsFailed)?;
+        let (account, seed, ref_block, mmr) = self
+            .data_store
+            .get_transaction_inputs(account_id, ref_blocks)
+            .await
+            .map_err(TransactionExecutorError::FetchTransactionInputsFailed)?;
 
-        validate_account_inputs(&tx_args, &ref_block)?;
+        validate_account_inputs(tx_args, &ref_block)?;
 
         let tx_inputs = TransactionInputs::new(account, seed, ref_block, mmr, notes)
             .map_err(TransactionExecutorError::InvalidTransactionInputs)?;
 
         let (stack_inputs, advice_inputs) =
-            TransactionKernel::prepare_inputs(&tx_inputs, &tx_args, None);
+            TransactionKernel::prepare_inputs(&tx_inputs, tx_args, init_advice_inputs)
+                .map_err(TransactionExecutorError::ConflictingAdviceMapEntry)?;
 
-        let advice_provider = MemAdviceProvider::from(advice_inputs.into_inner());
+        // This reverses the stack inputs (even though it doesn't look like it does) because the
+        // fast processor expects the reverse order.
+        //
+        // Once we use the FastProcessor for execution and proving, we can change the way these
+        // inputs are constructed in TransactionKernel::prepare_inputs.
+        let stack_inputs = StackInputs::new(stack_inputs.iter().copied().collect()).unwrap();
 
-        let scripts_mast_store = ScriptMastForestStore::new(
+        let input_notes = tx_inputs.input_notes();
+
+        let script_mast_store = ScriptMastForestStore::new(
             tx_args.tx_script(),
-            tx_inputs.input_notes().iter().map(|n| n.note().script()),
+            input_notes.iter().map(|n| n.note().script()),
         );
 
-        let mut host = TransactionHost::new(
+        let acct_procedure_index_map =
+            AccountProcedureIndexMap::from_transaction_params(&tx_inputs, tx_args, &advice_inputs)
+                .map_err(TransactionExecutorError::TransactionHostCreationFailed)?;
+
+        let host = TransactionExecutorHost::new(
             &tx_inputs.account().into(),
-            advice_provider,
+            input_notes.clone(),
             self.data_store,
-            scripts_mast_store,
+            script_mast_store,
+            acct_procedure_index_map,
             self.authenticator,
-            tx_args.foreign_account_code_commitments(),
-        )
-        .map_err(TransactionExecutorError::TransactionHostCreationFailed)?;
+            tx_inputs.block_header().fee_parameters(),
+            self.source_manager.clone(),
+        );
 
-        // execute the transaction kernel
-        let result = vm_processor::execute(
-            &TransactionKernel::main(),
-            stack_inputs,
-            &mut host,
-            self.exec_options,
-            source_manager,
-        )
-        .map_err(TransactionExecutorError::TransactionProgramExecutionFailed);
+        let advice_inputs = advice_inputs.into_advice_inputs();
 
-        match result {
-            Ok(_) => Ok(NoteAccountExecution::Success),
-            Err(tx_execution_error) => {
-                let notes = host.tx_progress().note_execution();
-
-                // empty notes vector means that we didn't process the notes, so an error
-                // occurred somewhere else
-                if notes.is_empty() {
-                    return Err(tx_execution_error);
-                }
-
-                let ((last_note, last_note_interval), success_notes) = notes
-                    .split_last()
-                    .expect("notes vector should not be empty because we just checked");
-
-                // if the interval end of the last note is specified, then an error occurred after
-                // notes processing
-                if last_note_interval.end().is_some() {
-                    return Err(tx_execution_error);
-                }
-
-                Ok(NoteAccountExecution::Failure {
-                    failed_note_id: *last_note,
-                    successful_notes: success_notes.iter().map(|(note, _)| *note).collect(),
-                    error: Some(tx_execution_error),
-                })
-            },
-        }
+        Ok((host, tx_inputs, stack_inputs, advice_inputs))
     }
 }
 
@@ -361,32 +318,39 @@ impl<'store, 'auth> TransactionExecutor<'store, 'auth> {
 // ================================================================================================
 
 /// Creates a new [ExecutedTransaction] from the provided data.
-fn build_executed_transaction(
+fn build_executed_transaction<STORE: DataStore + Sync, AUTH: TransactionAuthenticator + Sync>(
+    mut advice_inputs: AdviceInputs,
     tx_args: TransactionArgs,
     tx_inputs: TransactionInputs,
     stack_outputs: StackOutputs,
-    host: TransactionHost<RecAdviceProvider>,
+    host: TransactionExecutorHost<STORE, AUTH>,
 ) -> Result<ExecutedTransaction, TransactionExecutorError> {
-    let (advice_recorder, account_delta, output_notes, generated_signatures, tx_progress) =
+    // Note that the account delta does not contain the removed transaction fee, so it is the
+    // "pre-fee" delta of the transaction.
+    let (pre_fee_account_delta, output_notes, generated_signatures, tx_progress) =
         host.into_parts();
 
-    let (mut advice_witness, _, map, _store) = advice_recorder.finalize();
-
-    let advice_map = AdviceMap::from(map);
     let tx_outputs =
-        TransactionKernel::from_transaction_parts(&stack_outputs, &advice_map, output_notes)
+        TransactionKernel::from_transaction_parts(&stack_outputs, &advice_inputs, output_notes)
             .map_err(TransactionExecutorError::TransactionOutputConstructionFailed)?;
+
+    let pre_fee_delta_commitment = pre_fee_account_delta.to_commitment();
+    if tx_outputs.account_delta_commitment != pre_fee_delta_commitment {
+        return Err(TransactionExecutorError::InconsistentAccountDeltaCommitment {
+            in_kernel_commitment: tx_outputs.account_delta_commitment,
+            host_commitment: pre_fee_delta_commitment,
+        });
+    }
+
+    // The full transaction delta is the pre fee delta with the fee asset removed.
+    let mut post_fee_account_delta = pre_fee_account_delta;
+    post_fee_account_delta
+        .vault_mut()
+        .remove_asset(Asset::from(tx_outputs.fee))
+        .map_err(TransactionExecutorError::RemoveFeeAssetFromDelta)?;
 
     let initial_account = tx_inputs.account();
     let final_account = &tx_outputs.account;
-
-    let host_delta_commitment = account_delta.commitment();
-    if tx_outputs.account_delta_commitment != host_delta_commitment {
-        return Err(TransactionExecutorError::InconsistentAccountDeltaCommitment {
-            in_kernel_commitment: tx_outputs.account_delta_commitment,
-            host_commitment: host_delta_commitment,
-        });
-    }
 
     if initial_account.id() != final_account.id() {
         return Err(TransactionExecutorError::InconsistentAccountId {
@@ -397,22 +361,22 @@ fn build_executed_transaction(
 
     // make sure nonce delta was computed correctly
     let nonce_delta = final_account.nonce() - initial_account.nonce();
-    if nonce_delta != account_delta.nonce_delta() {
+    if nonce_delta != post_fee_account_delta.nonce_delta() {
         return Err(TransactionExecutorError::InconsistentAccountNonceDelta {
             expected: nonce_delta,
-            actual: account_delta.nonce_delta(),
+            actual: post_fee_account_delta.nonce_delta(),
         });
     }
 
     // introduce generated signatures into the witness inputs
-    advice_witness.extend_map(generated_signatures);
+    advice_inputs.map.extend(generated_signatures);
 
     Ok(ExecutedTransaction::new(
         tx_inputs,
         tx_outputs,
-        account_delta,
+        post_fee_account_delta,
         tx_args,
-        advice_witness,
+        advice_inputs,
         tx_progress.into(),
     ))
 }
@@ -474,20 +438,28 @@ fn validate_num_cycles(num_cycles: u32) -> Result<(), TransactionExecutorError> 
     }
 }
 
-// HELPER ENUM
-// ================================================================================================
-
-/// Describes whether a transaction with a specified set of notes could be executed against target
-/// account.
+/// Remaps an execution error to a transaction executor error.
 ///
-/// [NoteAccountExecution::Failure] holds data for error handling: `failing_note_id` is an ID of a
-/// failing note and `successful_notes` is a vector of note IDs which were successfully executed.
-#[derive(Debug)]
-pub enum NoteAccountExecution {
-    Success,
-    Failure {
-        failed_note_id: NoteId,
-        successful_notes: Vec<NoteId>,
-        error: Option<TransactionExecutorError>,
-    },
+/// - If the inner error is [`TransactionKernelError::Unauthorized`], it is remapped to
+///   [`TransactionExecutorError::Unauthorized`].
+/// - Otherwise, the execution error is wrapped in
+///   [`TransactionExecutorError::TransactionProgramExecutionFailed`].
+fn map_execution_error(exec_err: ExecutionError) -> TransactionExecutorError {
+    match exec_err {
+        ExecutionError::EventError { ref error, .. } => {
+            match error.downcast_ref::<TransactionKernelError>() {
+                Some(TransactionKernelError::Unauthorized(summary)) => {
+                    TransactionExecutorError::Unauthorized(summary.clone())
+                },
+                Some(TransactionKernelError::InsufficientFee { account_balance, tx_fee }) => {
+                    TransactionExecutorError::InsufficientFee {
+                        account_balance: *account_balance,
+                        tx_fee: *tx_fee,
+                    }
+                },
+                _ => TransactionExecutorError::TransactionProgramExecutionFailed(exec_err),
+            }
+        },
+        _ => TransactionExecutorError::TransactionProgramExecutionFailed(exec_err),
+    }
 }

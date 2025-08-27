@@ -1,7 +1,5 @@
-use miden_objects::{
-    Felt, ZERO,
-    account::{AccountDelta, AccountId, AccountStorageHeader, AccountVaultDelta},
-};
+use miden_objects::account::{AccountDelta, AccountId, AccountStorageHeader, AccountVaultDelta};
+use miden_objects::{Felt, FieldElement, ZERO};
 
 use crate::host::storage_delta_tracker::StorageDeltaTracker;
 
@@ -36,13 +34,23 @@ impl AccountDeltaTracker {
         }
     }
 
-    /// Tracks nonce delta.
-    pub fn increment_nonce(&mut self, value: Felt) {
-        self.nonce_delta += value;
+    /// Returns true if the nonce delta is non-zero.
+    pub fn was_nonce_incremented(&self) -> bool {
+        self.nonce_delta != Felt::ZERO
     }
 
-    /// Get a mutable reference to the current vault delta
-    pub fn vault_delta(&mut self) -> &mut AccountVaultDelta {
+    /// Increments the nonce delta by one.
+    pub fn increment_nonce(&mut self) {
+        self.nonce_delta += Felt::ONE;
+    }
+
+    /// Returns a reference to the vault delta.
+    pub fn vault_delta(&self) -> &AccountVaultDelta {
+        &self.vault
+    }
+
+    /// Returns a mutable reference to the vault delta.
+    pub fn vault_delta_mut(&mut self) -> &mut AccountVaultDelta {
         &mut self.vault
     }
 

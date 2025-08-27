@@ -1,9 +1,13 @@
 use alloc::string::{String, ToString};
 
-use crate::{
-    Felt, ONE, Word, ZERO,
-    utils::serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
+use crate::utils::serde::{
+    ByteReader,
+    ByteWriter,
+    Deserializable,
+    DeserializationError,
+    Serializable,
 };
+use crate::{Felt, Word};
 
 // STORAGE SLOT TYPE
 // ================================================================================================
@@ -21,8 +25,8 @@ impl StorageSlotType {
     /// Returns storage slot type as a [Word]
     pub fn as_word(&self) -> Word {
         match self {
-            StorageSlotType::Value => [ZERO, ZERO, ZERO, ZERO],
-            StorageSlotType::Map => [ONE, ZERO, ZERO, ZERO],
+            StorageSlotType::Value => Word::empty(),
+            StorageSlotType::Map => Word::from([1, 0, 0, 0u32]),
         }
     }
 }
@@ -75,7 +79,7 @@ impl Deserializable for StorageSlotType {
 
 #[cfg(test)]
 mod tests {
-    use vm_core::utils::{Deserializable, Serializable};
+    use miden_core::utils::{Deserializable, Serializable};
 
     use crate::account::StorageSlotType;
 

@@ -3,17 +3,19 @@ use.std::collections::smt
 use.std::crypto::hashes::rpo
 use.std::mem
 
-use.kernel::account_id
-use.kernel::asset_vault
-use.kernel::asset
-use.kernel::account_delta
-use.kernel::constants
-use.kernel::memory
+use.$kernel::account_id
+use.$kernel::asset_vault
+use.$kernel::asset
+use.$kernel::account_delta
+use.$kernel::constants
+use.$kernel::memory
 
 # ERRORS
 # =================================================================================================
 
-const.ERR_ACCOUNT_NONCE_INCREASE_MUST_BE_U32="account nonce cannot be increased by a greater than u32 value"
+const.ERR_ACCOUNT_NONCE_CAN_ONLY_BE_INCREMENTED_ONCE="account nonce can only be incremented once"
+
+const.ERR_ACCOUNT_NONCE_AT_MAX="account nonce is already at its maximum possible value"
 
 const.ERR_ACCOUNT_CODE_IS_NOT_UPDATABLE="account code must be updatable for it to be possible to set new code"
 
@@ -27,7 +29,7 @@ const.ERR_ACCOUNT_PROC_NOT_PART_OF_ACCOUNT_CODE="account procedure is not part o
 
 const.ERR_ACCOUNT_PROC_INDEX_OUT_OF_BOUNDS="provided procedure index is out of bounds"
 
-const.ERR_ACCOUNT_PROC_NOT_AUTH_PROC="account procedure is not the authentication procedure"
+const.ERR_ACCOUNT_PROC_NOT_AUTH_PROC="account procedure is not the authentication procedure; some procedures (e.g. `incr_nonce`) can be called only from the authentication procedure"
 
 const.ERR_ACCOUNT_STORAGE_SLOT_INDEX_OUT_OF_BOUNDS="provided storage slot index is out of bounds"
 
@@ -192,25 +194,21 @@ end
 
 #! Computes the account commitment of the current account.
 #!
+#! Notice that there is no caching (and, hence, dirty flag) for the commitment of the entire 
+#! account. Assuming that the storage commitment is current, computing account commitment is 
+#! relatively cheap — essentially is consists of just 2 permutations of the hash function and takes
+#! relatively small number of cycles, so it would not be worth adding a separate caching mechanism 
+#! for this.
+#!
 #! Inputs:  []
 #! Outputs: [ACCOUNT_COMMITMENT]
 #!
 #! Where:
 #! - ACCOUNT_COMMITMENT is the commitment of the account data.
 export.compute_current_commitment
-    exec.memory::is_native_account
-    # => [is_native_account]
-
-    # first compute the latest storage commitment and update the code commitment
-    # since foreign accounts do not change during transaction execution, this step can be skipped
-    # for them
-    if.true
-        exec.compute_current_storage_commitment
-        # => []
-
-        exec.update_code_commitment
-        # => []
-    end
+    # if outdated, recompute the storage commitment and store it in the memory
+    exec.refresh_storage_commitment
+    # => []
 
     # prepare the stack for computing the account commitment
     exec.memory::get_current_account_data_ptr padw padw padw
@@ -230,33 +228,42 @@ export.compute_current_commitment
     # => [ACCOUNT_COMMITMENT]
 end
 
-#! Increments the account nonce by the provided increment.
+#! Increments the account nonce by one and returns the new nonce.
 #!
-#! Inputs:  [nonce_increment]
-#! Outputs: []
+#! Assumes that it is executed only when the current account is the native account.
 #!
-#! Where:
-#! - nonce_increment is the u32 value to increment the nonce by.
+#! Inputs:  []
+#! Outputs: [new_nonce]
 #!
 #! Panics if:
-#! - the nonce_increment exceeds 2^32 - 1.
+#! - the nonce has already been incremented.
 export.incr_nonce
-    u32assert.err=ERR_ACCOUNT_NONCE_INCREASE_MUST_BE_U32
-    # => [nonce_increment]
+    exec.account_delta::was_nonce_incremented
+    # => [was_nonce_incremented]
 
-    dup exec.memory::incr_account_nonce_delta
-    # => [nonce_delta]
+    # assert the nonce has not already been incremented
+    assertz.err=ERR_ACCOUNT_NONCE_CAN_ONLY_BE_INCREMENTED_ONCE
+    # => []
 
     # emit event to signal that account nonce is being incremented
     emit.ACCOUNT_BEFORE_INCREMENT_NONCE_EVENT
 
-    exec.memory::get_acct_nonce add
+    exec.memory::get_acct_nonce
+    # => [current_nonce]
+
+    # if the current nonce is the maximum felt value, then incrementing the nonce would overflow
+    # the field
+    dup neq.0xffffffff00000000 assert.err=ERR_ACCOUNT_NONCE_AT_MAX
+    # => [current_nonce]
+
+    add.1
     # => [new_nonce]
 
-    exec.memory::set_acct_nonce
-    # => []
+    dup exec.memory::set_acct_nonce
+    # => [new_nonce]
 
     emit.ACCOUNT_AFTER_INCREMENT_NONCE_EVENT
+    # => [new_nonce]
 end
 
 #! Returns the id of the current account.
@@ -278,7 +285,7 @@ export.memory::get_account_id->get_id
 #! - nonce is the account nonce.
 export.memory::get_acct_nonce->get_nonce
 
-#! Returns the initial account commitment.
+#! Returns the native account commitment at the beginning of the transaction.
 #!
 #! Inputs:  []
 #! Outputs: [INIT_COMMITMENT]
@@ -287,6 +294,24 @@ export.memory::get_acct_nonce->get_nonce
 #! - INIT_COMMITMENT is the initial account commitment.
 export.memory::get_init_account_commitment->get_initial_commitment
 
+#! Returns the vault root of the native account at the beginning of the transaction.
+#!
+#! Inputs:  []
+#! Outputs: [INIT_ACCOUNT_VAULT_ROOT]
+#!
+#! Where:
+#! - INIT_ACCOUNT_VAULT_ROOT is the initial account vault root.
+export.memory::get_init_account_vault_root->get_initial_vault_root
+
+#! Returns the storage commitment of the native account at the beginning of the transaction.
+#!
+#! Inputs:  []
+#! Outputs: [INIT_ACCOUNT_STORAGE_COMMITMENT]
+#!
+#! Where:
+#! - INIT_ACCOUNT_STORAGE_COMMITMENT is the initial account storage commitment.
+export.memory::get_init_account_storage_commitment->get_initial_storage_commitment
+
 #! Gets the code commitment of the current account.
 #!
 #! Inputs:  []
@@ -294,21 +319,20 @@ export.memory::get_init_account_commitment->get_initial_commitment
 #!
 #! Where:
 #! - CODE_COMMITMENT is the commitment of the account code.
-export.get_code_commitment
-    # get the code commitment
-    exec.memory::get_acct_code_commitment
-    # => [CODE_COMMITMENT]
-end
+export.memory::get_acct_code_commitment->get_code_commitment
 
-#! Gets the storage commitment of the current account.
+#! Computes the storage commitment of the current account.
 #!
 #! Inputs:  []
 #! Outputs: [STORAGE_COMMITMENT]
 #!
 #! Where:
-#! - STORAGE_COMMITMENT is the commitment of the account code.
-export.get_storage_commitment
-    # get the storage commitment
+#! - STORAGE_COMMITMENT is the current commitment of the account storage.
+export.compute_storage_commitment
+    # if outdated, recompute the storage commitment and store it in the memory
+    exec.refresh_storage_commitment
+
+    # return the storage commitment
     exec.memory::get_acct_storage_commitment
     # => [STORAGE_COMMITMENT]
 end
@@ -648,7 +672,7 @@ end
 export.get_procedure_info
     # check that index < number of procedures contained in the account code
     dup exec.memory::get_num_account_procedures
-    u32assert2 u32lt assert.err=ERR_ACCOUNT_PROC_INDEX_OUT_OF_BOUNDS
+    u32assert2.err=ERR_ACCOUNT_PROC_INDEX_OUT_OF_BOUNDS u32lt assert.err=ERR_ACCOUNT_PROC_INDEX_OUT_OF_BOUNDS
     # => [index]
 
     # get procedure pointer
@@ -720,6 +744,10 @@ end
 export.assert_auth_procedure
     # authentication procedure is always at index 0
     push.0
+    # => [index, PROC_ROOT]
+
+    # set was_called for the the auth procedure to true
+    dup exec.set_was_procedure_called
     # => [index, PROC_ROOT]
 
     # get procedure info (PROC_ROOT, storage_offset, storage_size) from memory stored at index
@@ -1057,6 +1085,11 @@ proc.set_item_raw
     swap mul.8 add mem_storew
     # => [NEW_VALUE, OLD_VALUE]
 
+    # update the storage commitment dirty flag, indicating that the commitment is outdated
+    push.1
+    exec.memory::set_native_account_storage_commitment_dirty_flag
+    # => [NEW_VALUE, OLD_VALUE]
+
     # drop value
     dropw
     # => [OLD_VALUE]
@@ -1074,7 +1107,7 @@ end
 #! - the procedure index is out of bounds.
 proc.get_procedure_root
     dup exec.memory::get_num_account_procedures
-    u32assert2 u32lt assert.err=ERR_ACCOUNT_PROC_INDEX_OUT_OF_BOUNDS
+    u32assert2.err=ERR_ACCOUNT_PROC_INDEX_OUT_OF_BOUNDS u32lt assert.err=ERR_ACCOUNT_PROC_INDEX_OUT_OF_BOUNDS
     # => [index]
 
     # get procedure pointer
@@ -1221,22 +1254,30 @@ proc.hash_map_key
     # => [HASHED_KEY]
 end
 
-#! Computes the account storage commitment by hashing the storage slots and updates the storage
-#! commitment in memory to the newly computed storage commitment.
+#! Makes the account storage commitment up-to-date.
+#!
+#! Notice that the account storage commitment got updated only if it is outdated: if the account 
+#! storage changes, its commitment will be recomputed by hashing the storage slots. Then this newly
+#! computed storage commitment updates the storage commitment in memory. If the storage commitment
+#! is up-to-date, this procedure does nothing. 
 #!
 #! Inputs:  []
 #! Outputs: []
-proc.compute_current_storage_commitment
-    # get number of storage slots
-    exec.memory::get_num_storage_slots
-    # => [num_storage_slots]
+proc.refresh_storage_commitment
+    # First we should determine whether the storage commitment should be recomputed. We should do so
+    # if the current account is native and the storage commitment is outdated (the dirty flag equals
+    # 1). Otherwise the commitment value is guaranteed to be up-to-date.
+    exec.memory::get_recompute_storage_commitment_flag
+    # => [should_recompute_storage_commitment]
 
-    # check if there are storage slots
-    dup push.0 neq
-    # => [storage_slots_is_not_empty, num_storage_slots]
-
-    # only loop and hash over storage if there are storage slots
     if.true
+        # dirty flag being equal 1 ensures that we have at least one storage slot, so we have to 
+        # hash the storage anyway
+
+        # get number of storage slots
+        exec.memory::get_num_storage_slots
+        # => [num_storage_slots]
+
         # setup start and end ptr
         mul.8 exec.memory::get_acct_storage_slots_section_ptr dup movdn.2 add swap
         # => [start_ptr, end_ptr]
@@ -1260,31 +1301,19 @@ proc.compute_current_storage_commitment
         # set new account storage commitment
         exec.memory::set_acct_storage_commitment dropw
         # => []
-    else
-        # drop number of storage slots
-        drop
+
+        # update the storage commitment dirty flag, indicating that the commitment is up-to-date
+        push.0 
+        exec.memory::set_native_account_storage_commitment_dirty_flag
         # => []
     end
 end
 
-#! Updates the account code commitment if the account code has changed. `NEW_ACCT_CODE_COMMITMENT`
-#! is set to the initial account code commitment in the prologue and as such this procedure will
-#! not result in a change to the account code commitment if the `account::set_code` procedure has
-#! not been invoked in this transaction.
-#!
-#! Inputs:  []
-#! Outputs: []
-proc.update_code_commitment
-    # fetch the new code commitment, which may be the initial one
-    exec.memory::get_new_acct_code_commitment
-    # => [NEW_ACCT_CODE_COMMITMENT]
-
-    # set the account code commitment to the new account code commitment (may not have changed)
-    exec.memory::set_acct_code_commitment dropw
-    # => []
-end
-
 #! Checks if a procedure has been called during transaction execution.
+#!
+#! Note: This returns 1 only if the procedure invoked account-restricted kernel APIs (e.g.,
+#! `exec.faucet::mint`) which trigger `authenticate_and_track_procedure`. Procedures that execute
+#! only local MASM instructions will return 0 even if they were executed.
 #!
 #! Inputs:  [PROC_ROOT]
 #! Outputs: [was_called]
