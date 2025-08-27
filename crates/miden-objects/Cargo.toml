@@ -56,7 +56,7 @@ toml         = { optional = true, version = "0.8" }
 getrandom = { features = ["wasm_js"], version = "0.3" }
 
 [dev-dependencies]
-anyhow         = { default-features = false, features = ["backtrace", "std"], version = "1.0" }
+anyhow         = { features = ["backtrace", "std"], workspace = true }
 assert_matches = { workspace = true }
 criterion      = { default-features = false, features = ["html_reports"], version = "0.5" }
 miden-objects  = { features = ["testing"], path = "." }
