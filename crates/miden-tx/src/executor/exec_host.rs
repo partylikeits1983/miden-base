@@ -5,12 +5,14 @@ use alloc::vec::Vec;
 
 use miden_lib::errors::TransactionKernelError;
 use miden_lib::transaction::TransactionEvent;
-use miden_objects::account::{AccountDelta, PartialAccount};
+use miden_objects::account::{AccountDelta, AccountId, PartialAccount};
 use miden_objects::assembly::debuginfo::Location;
 use miden_objects::assembly::{SourceFile, SourceManagerSync, SourceSpan};
-use miden_objects::asset::FungibleAsset;
+use miden_objects::asset::{Asset, FungibleAsset};
 use miden_objects::block::FeeParameters;
+use miden_objects::crypto::merkle::SmtProof;
 use miden_objects::transaction::{InputNote, InputNotes, OutputNote};
+use miden_objects::vm::AdviceMap;
 use miden_objects::{Felt, Hasher, Word};
 use miden_processor::{
     AdviceMutation,
@@ -19,11 +21,9 @@ use miden_processor::{
     EventError,
     FutureMaybeSend,
     MastForest,
-    MastForestStore,
     ProcessState,
 };
 
-use crate::AccountProcedureIndexMap;
 use crate::auth::{SigningInputs, TransactionAuthenticator};
 use crate::host::{
     ScriptMastForestStore,
@@ -32,6 +32,7 @@ use crate::host::{
     TransactionEventHandling,
     TransactionProgress,
 };
+use crate::{AccountProcedureIndexMap, DataStore};
 
 // TRANSACTION EXECUTOR HOST
 // ================================================================================================
@@ -45,7 +46,7 @@ use crate::host::{
 /// execution.
 pub struct TransactionExecutorHost<'store, 'auth, STORE, AUTH>
 where
-    STORE: MastForestStore,
+    STORE: DataStore,
     AUTH: TransactionAuthenticator,
 {
     /// The underlying base transaction host.
@@ -72,7 +73,7 @@ where
 
 impl<'store, 'auth, STORE, AUTH> TransactionExecutorHost<'store, 'auth, STORE, AUTH>
 where
-    STORE: MastForestStore + Sync,
+    STORE: DataStore + Sync,
     AUTH: TransactionAuthenticator + Sync,
 {
     // CONSTRUCTORS
@@ -212,6 +213,69 @@ where
         Ok(Vec::new())
     }
 
+    /// Handles a request to an asset witness by querying the data store for a merkle path.
+    ///
+    /// ## Native Account
+    ///
+    /// For the native account we always request witnesses for the initial vault root, because the
+    /// data store only has the state of the account vault at the beginning of the transaction.
+    /// Since the vault root can change as the transaction progresses, this means the witnesses
+    /// may become _partially_ or fully outdated. To see why they can only be _partially_ outdated,
+    /// consider the following example:
+    ///
+    /// ```text
+    ///      A               A'
+    ///     / \             /  \
+    ///    B   C    ->    B'    C
+    ///   / \  / \       /  \  / \
+    ///  D  E F   G     D   E' F  G
+    /// ```
+    ///
+    /// Leaf E was updated to E', in turn updating nodes B and A. If we now request the merkle path
+    /// to G against root A (the initial vault root), we'll get nodes F and B. F is a node in the
+    /// updated tree, while B is not. We insert both into the merkle store anyway. Now, if the
+    /// transaction attempts to verify the merkle path to G, it can do so because F and B' are in
+    /// the merkle store. Note that B' is in the store because the transaction inserted it into the
+    /// merkle store as part of updating E, not because we inserted it. B is present in the store,
+    /// but is simply ignored for the purpose of verifying G's inclusion.
+    async fn on_account_vault_asset_witness_requested(
+        &self,
+        current_account_id: AccountId,
+        _vault_root: Word,
+        asset: Asset,
+    ) -> Result<Vec<AdviceMutation>, TransactionKernelError> {
+        // For now, we only support getting witnesses for the native account, so return early if the
+        // requested account is not the native one.
+        if current_account_id != self.base_host.initial_account_header().id() {
+            return Ok(Vec::new());
+        }
+
+        let vault_root = self.base_host.initial_account_header().vault_root();
+        let vault_key = asset.vault_key();
+        let asset_witness = self
+            .base_host
+            .store()
+            .get_vault_asset_witness(current_account_id, vault_root, vault_key)
+            .await
+            .map_err(|err| TransactionKernelError::GetVaultAssetWitness {
+                vault_root,
+                vault_key,
+                source: Box::new(err),
+            })?;
+
+        // Get the nodes in the proof and insert them into the merkle store.
+        let merkle_store_ext =
+            AdviceMutation::extend_merkle_store(asset_witness.authenticated_nodes());
+
+        let smt_proof = SmtProof::from(asset_witness);
+        let map_ext = AdviceMutation::extend_map(AdviceMap::from_iter([(
+            smt_proof.leaf().hash(),
+            smt_proof.leaf().to_elements(),
+        )]));
+
+        Ok(vec![merkle_store_ext, map_ext])
+    }
+
     /// Consumes `self` and returns the account delta, output notes, generated signatures and
     /// transaction progress.
     #[allow(clippy::type_complexity)]
@@ -235,7 +299,7 @@ where
 
 impl<STORE, AUTH> BaseHost for TransactionExecutorHost<'_, '_, STORE, AUTH>
 where
-    STORE: MastForestStore,
+    STORE: DataStore,
     AUTH: TransactionAuthenticator,
 {
     fn get_mast_forest(&self, procedure_root: &Word) -> Option<Arc<MastForest>> {
@@ -255,7 +319,7 @@ where
 
 impl<STORE, AUTH> AsyncHost for TransactionExecutorHost<'_, '_, STORE, AUTH>
 where
-    STORE: MastForestStore + Sync,
+    STORE: DataStore + Sync,
     AUTH: TransactionAuthenticator + Sync,
 {
     fn on_event(
@@ -286,6 +350,14 @@ where
                 TransactionEventData::TransactionFeeComputed { fee_asset } => {
                     self.on_tx_fee_computed(fee_asset).map_err(EventError::from)
                 },
+                TransactionEventData::AccountVaultAssetWitness {
+                    current_account_id,
+                    vault_root,
+                    asset,
+                } => self
+                    .on_account_vault_asset_witness_requested(current_account_id, vault_root, asset)
+                    .await
+                    .map_err(EventError::from),
             }
         }
     }
