@@ -1,7 +1,7 @@
-use miden_crypto::merkle::{InnerNodeInfo, SmtProof};
+use miden_crypto::merkle::{InnerNodeInfo, SmtLeaf, SmtProof};
 
-use crate::AssetError;
 use crate::asset::Asset;
+use crate::{AssetError, Word};
 
 /// A witness of an asset in an [`AssetVault`](super::AssetVault).
 ///
@@ -10,6 +10,9 @@ use crate::asset::Asset;
 pub struct AssetWitness(SmtProof);
 
 impl AssetWitness {
+    // CONSTRUCTORS
+    // --------------------------------------------------------------------------------------------
+
     /// Creates a new [`AssetWitness`] from an SMT proof.
     ///
     /// # Errors
@@ -37,6 +40,30 @@ impl AssetWitness {
     /// Prefer [`AssetWitness::new`] whenever possible.
     pub fn new_unchecked(smt_proof: SmtProof) -> Self {
         Self(smt_proof)
+    }
+
+    // PUBLIC ACCESSORS
+    // --------------------------------------------------------------------------------------------
+
+    /// Searches for an [`Asset`] in the witness with the given `vault_key`.
+    pub fn find(&self, vault_key: Word) -> Option<Asset> {
+        self.assets().find(|asset| asset.vault_key() == vault_key)
+    }
+
+    /// Returns an iterator over the [`Asset`]s in this witness.
+    pub fn assets(&self) -> impl Iterator<Item = Asset> {
+        // TODO: Avoid cloning the vector by not calling SmtLeaf::entries.
+        // Once SmtLeaf::entries returns a slice (i.e. once
+        // https://github.com/0xMiden/crypto/pull/521 is available), replace this match statement.
+        let entries = match self.0.leaf() {
+            SmtLeaf::Empty(_) => &[],
+            SmtLeaf::Single(kv_pair) => core::slice::from_ref(kv_pair),
+            SmtLeaf::Multiple(kv_pairs) => kv_pairs,
+        };
+
+        entries.iter().map(|(_key, value)| {
+            Asset::try_from(value).expect("asset witness should track valid assets")
+        })
     }
 
     /// Returns an iterator over every inner node of this witness' merkle path.
