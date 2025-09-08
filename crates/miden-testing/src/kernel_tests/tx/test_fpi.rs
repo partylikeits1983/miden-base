@@ -38,6 +38,7 @@ use miden_objects::assembly::diagnostics::NamedSource;
 use miden_objects::testing::storage::STORAGE_LEAVES_2;
 use miden_objects::transaction::AccountInputs;
 use miden_processor::{AdviceInputs, Felt};
+use miden_tx::LocalTransactionProver;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -850,6 +851,11 @@ fn test_nested_fpi_cyclic_invocation() -> anyhow::Result<()> {
         .tx_script(tx_script)
         .build()?
         .execute_blocking()?;
+
+    let executed_transaction = tx_context.execute_blocking()?;
+
+    // TODO: Remove later and add a integration test using FPI.
+    LocalTransactionProver::default().prove(executed_transaction.into())?;
 
     Ok(())
 }
