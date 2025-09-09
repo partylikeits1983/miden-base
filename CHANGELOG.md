@@ -10,6 +10,7 @@
 - Added `get_native_id` and `get_native_nonce` procedures to the `miden` library ([#1844](https://github.com/0xMiden/miden-base/pull/1844)).
 - Enable lazy loading of assets during transaction execution ([#1848](https://github.com/0xMiden/miden-base/pull/1848)).
 - Lazy load the native asset ([#1855](https://github.com/0xMiden/miden-base/pull/1855)).
+- Added `build_recipient` procedure to `miden::note` module ([#1807](https://github.com/0xMiden/miden-base/pull/1807)).
 
 ### Changes
 
