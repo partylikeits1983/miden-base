@@ -277,6 +277,16 @@ pub enum TransactionKernelError {
     GetVaultAssetWitness {
         vault_root: Word,
         vault_key: Word,
+        // thiserror will return this when calling Error::source on TransactionKernelError.
+        source: DataStoreError,
+    },
+    #[error(
+        "failed to get storage map witness from data store for map root {map_root} and map_key {map_key}"
+    )]
+    GetStorageMapWitness {
+        map_root: Word,
+        map_key: Word,
+        // thiserror will return this when calling Error::source on TransactionKernelError.
         source: DataStoreError,
     },
     #[error(
