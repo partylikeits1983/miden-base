@@ -87,7 +87,7 @@ export.get_recipient
     # => [RECIPIENT]
 end
 
-#! Writes the note's inputs to `dest_ptr`.
+#! Writes the active note's inputs to memory starting at the specified address.
 #!
 #! Inputs:
 #!   Stack: [dest_ptr]
@@ -200,6 +200,39 @@ export.get_serial_number
     # => [SERIAL_NUMBER]
 end
 
+#! Returns the script root of the note currently being processed.
+#!
+#! Inputs:  []
+#! Outputs: [SCRIPT_ROOT]
+#!
+#! Where:
+#! - SCRIPT_ROOT is the script root of the note currently being processed.
+#!
+#! Panics if:
+#! - no note is being processed.
+#!
+#! Invocation: exec
+export.get_script_root
+    # pad the stack
+    padw padw padw push.0.0
+    # => [pad(14)]
+
+    # push the flag indicating that we want to request script root from the currently processing
+    # note
+    push.1
+    # => [is_current_note = 1, pad(14)]
+
+    exec.kernel_proc_offsets::input_note_get_script_root_offset
+    # => [offset, is_current_note = 1, pad(14)]
+
+    syscall.exec_kernel_proc
+    # => [SCRIPT_ROOT, pad(12)]
+
+    # clean the stack
+    swapdw dropw dropw swapw dropw
+    # => [SCRIPT_ROOT]
+end
+
 #! Computes the commitment to the output note inputs starting at the specified memory address.
 #!
 #! This procedure checks that the provided number of note inputs is within limits and then computes
@@ -235,39 +268,6 @@ export.compute_inputs_commitment
     exec.rpo::prepare_hasher_state
     exec.rpo::hash_memory_with_state
     # => [INPUTS_COMMITMENT]
-end
-
-#! Returns the script root of the note currently being processed.
-#!
-#! Inputs:  []
-#! Outputs: [SCRIPT_ROOT]
-#!
-#! Where:
-#! - SCRIPT_ROOT is the script root of the note currently being processed.
-#!
-#! Panics if:
-#! - no note is being processed.
-#!
-#! Invocation: exec
-export.get_script_root
-    # pad the stack
-    padw padw padw push.0.0
-    # => [pad(14)]
-
-    # push the flag indicating that we want to request script root from the currently processing
-    # note
-    push.1
-    # => [is_current_note = 1, pad(14)]
-
-    exec.kernel_proc_offsets::input_note_get_script_root_offset
-    # => [offset, is_current_note = 1, pad(14)]
-
-    syscall.exec_kernel_proc
-    # => [SCRIPT_ROOT, pad(12)]
-
-    # clean the stack
-    swapdw dropw dropw swapw dropw
-    # => [SCRIPT_ROOT]
 end
 
 #! Returns the max allowed number of input values per note.
@@ -366,7 +366,6 @@ export.write_assets_to_memory
     # OS => [num_assets, dest_ptr]
     # AS => []
 end
-
 
 #! Builds the recipient hash from note inputs, script root, and serial number.
 #!
