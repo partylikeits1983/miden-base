@@ -146,7 +146,7 @@ impl LocalTransactionProver {
         )
         .map_err(TransactionProverError::CreateAccountProcedureIndexMap)?;
 
-        let (partial_account, _, ref_block, _, input_notes) = tx_inputs.into_parts();
+        let (partial_account, ref_block, _, input_notes) = tx_inputs.into_parts();
         let mut host = TransactionProverHost::new(
             &partial_account,
             input_notes,
@@ -196,7 +196,7 @@ impl Default for LocalTransactionProver {
 }
 
 fn partial_account_to_full(partial_account: PartialAccount) -> Account {
-    let (id, nonce, code, partial_storage, partial_vault) = partial_account.into_parts();
+    let (id, partial_vault, partial_storage, code, nonce, seed) = partial_account.into_parts();
 
     // For new accounts, the partial storage must represent the full initial account
     // storage.
@@ -206,7 +206,8 @@ fn partial_account_to_full(partial_account: PartialAccount) -> Account {
     debug_assert_eq!(partial_vault.leaves().count(), 0);
     let vault = AssetVault::default();
 
-    Account::from_parts(id, vault, storage, code, nonce)
+    Account::new(id, vault, storage, code, nonce, seed)
+        .expect("partial account should ensure internal consistency for seed")
 }
 
 fn partial_storage_to_full(partial_storage: PartialStorage) -> AccountStorage {
@@ -249,7 +250,7 @@ impl LocalTransactionProver {
     ) -> Result<ProvenTransaction, TransactionProverError> {
         let (account_delta, tx_outputs, tx_witness, _) = executed_tx.into_parts();
 
-        let (partial_account, _, ref_block, _, input_notes) = tx_witness.tx_inputs.into_parts();
+        let (partial_account, ref_block, _, input_notes) = tx_witness.tx_inputs.into_parts();
 
         self.build_proven_transaction(
             &input_notes,

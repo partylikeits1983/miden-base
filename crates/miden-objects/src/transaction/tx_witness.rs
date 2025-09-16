@@ -109,8 +109,7 @@ mod tests {
         );
 
         let tx_inputs = TransactionInputs::new(
-            account.clone(),
-            None,
+            &account,
             block_header.clone(),
             partial_blockchain.clone(),
             InputNotes::default(),
