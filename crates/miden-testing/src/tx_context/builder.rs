@@ -12,6 +12,7 @@ use miden_objects::EMPTY_WORD;
 use miden_objects::account::{
     Account,
     AccountHeader,
+    AccountId,
     PartialAccount,
     PartialStorage,
     PartialStorageMap,
@@ -79,7 +80,7 @@ pub struct TransactionContextBuilder {
     advice_inputs: AdviceInputs,
     authenticator: Option<MockAuthenticator>,
     expected_output_notes: Vec<Note>,
-    foreign_account_inputs: Vec<AccountInputs>,
+    foreign_account_inputs: BTreeMap<AccountId, AccountInputs>,
     input_notes: Vec<Note>,
     tx_script: Option<TransactionScript>,
     tx_script_args: Word,
@@ -87,7 +88,7 @@ pub struct TransactionContextBuilder {
     transaction_inputs: Option<TransactionInputs>,
     auth_args: Word,
     signatures: Vec<(PublicKey, Word, Vec<Felt>)>,
-    load_partial_account: bool,
+    is_lazy_loading_enabled: bool,
 }
 
 impl TransactionContextBuilder {
@@ -104,10 +105,10 @@ impl TransactionContextBuilder {
             advice_inputs: Default::default(),
             transaction_inputs: None,
             note_args: BTreeMap::new(),
-            foreign_account_inputs: vec![],
+            foreign_account_inputs: BTreeMap::new(),
             auth_args: EMPTY_WORD,
             signatures: Vec::new(),
-            load_partial_account: false,
+            is_lazy_loading_enabled: false,
         }
     }
 
@@ -175,8 +176,9 @@ impl TransactionContextBuilder {
     }
 
     /// Set foreign account codes that are used by the transaction
-    pub fn foreign_accounts(mut self, inputs: Vec<AccountInputs>) -> Self {
-        self.foreign_account_inputs = inputs;
+    pub fn foreign_accounts(mut self, inputs: impl IntoIterator<Item = AccountInputs>) -> Self {
+        self.foreign_account_inputs
+            .extend(inputs.into_iter().map(|account_inputs| (account_inputs.id(), account_inputs)));
         self
     }
 
@@ -216,11 +218,13 @@ impl TransactionContextBuilder {
     }
 
     /// Causes the transaction to only construct a minimal partial account as the transaction
-    /// input, causing lazy loading of assets throughout transaction execution.
+    /// input, causing lazy loading of assets and storage map items throughout transaction
+    /// execution. Additionally, foreign accounts aren't provided via the transaction args but are
+    /// lazy loaded as well.
     ///
     /// This exists to test lazy loading selectively and should go away in the future.
-    pub fn enable_partial_loading(mut self) -> Self {
-        self.load_partial_account = true;
+    pub fn enable_lazy_loading(mut self) -> Self {
+        self.is_lazy_loading_enabled = true;
         self
     }
 
@@ -294,7 +298,7 @@ impl TransactionContextBuilder {
         // If partial loading is enabled, construct an account that doesn't contain all
         // merkle paths of assets and storage maps, in order to test lazy loading.
         // Otherwise, load the full account.
-        let tx_inputs = if self.load_partial_account {
+        let tx_inputs = if self.is_lazy_loading_enabled {
             let (account, account_seed, block_header, partial_blockchain, input_notes) =
                 tx_inputs.into_parts();
             // Construct a partial vault that tracks the empty word, but none of the assets
@@ -344,7 +348,13 @@ impl TransactionContextBuilder {
             tx_inputs
         };
 
-        let tx_args = TransactionArgs::new(AdviceMap::default(), self.foreign_account_inputs)
+        let foreign_account_inputs = if self.is_lazy_loading_enabled {
+            Vec::new()
+        } else {
+            self.foreign_account_inputs.values().cloned().collect()
+        };
+
+        let tx_args = TransactionArgs::new(AdviceMap::default(), foreign_account_inputs)
             .with_note_args(self.note_args);
 
         let mut tx_args = if let Some(tx_script) = self.tx_script {
@@ -366,7 +376,7 @@ impl TransactionContextBuilder {
             let mast_forest_store = TransactionMastStore::new();
             mast_forest_store.load_account_code(tx_inputs.account().code());
 
-            for acc_inputs in tx_args.foreign_account_inputs() {
+            for acc_inputs in self.foreign_account_inputs.values() {
                 mast_forest_store.insert(acc_inputs.code().mast());
             }
 
@@ -376,6 +386,7 @@ impl TransactionContextBuilder {
         Ok(TransactionContext {
             account: self.account,
             expected_output_notes: self.expected_output_notes,
+            foreign_account_inputs: self.foreign_account_inputs,
             tx_args,
             tx_inputs,
             mast_store,
