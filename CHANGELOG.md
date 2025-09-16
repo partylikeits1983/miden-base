@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.3 (2025-09-15)
+
+- Added Serialize and Deserialize Traits on `SigningInputs` ([#1858](https://github.com/0xMiden/miden-base/pull/1858))
+
 ## 0.11.2 (2025-09-08)
 
 - Fixed foreign account inputs not being loaded in `LocalTransactionProver` ([#1866](https://github.com/0xMiden/miden-base/pull/#1866)).
