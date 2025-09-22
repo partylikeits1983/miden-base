@@ -371,8 +371,10 @@ fn minimal_partial_account(account: &Account) -> anyhow::Result<PartialAccount> 
         account.storage().slots().iter().filter_map(|storage_slot| match storage_slot {
             StorageSlot::Map(storage_map) => {
                 let mut partial_storage_map = PartialStorageMap::default();
+                let key = Word::empty();
+                let witness = storage_map.open(&key);
                 partial_storage_map
-                    .add(storage_map.open(&Word::empty()))
+                    .add(witness)
                     .expect("adding the first proof should never error");
                 Some(partial_storage_map)
             },
