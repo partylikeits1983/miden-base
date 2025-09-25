@@ -144,6 +144,8 @@ export.verify_signatures.16
             swapw
             # => [MSG, PK, MSG, i-1]
 
+            push.222 debug.stack drop
+
             # Emit the authentication request event that pushes a signature for the message to the advice stack.
             emit.AUTH_REQUEST
 
